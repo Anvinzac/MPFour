@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #0a0a0a;
+  color: #fafafa;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+
+.media-cell__video,
+.media-cell__canvas {
+  opacity: 0;
+  transition: opacity 0.35s ease-out;
+}
+
+.media-cell__video--ready,
+.media-cell__canvas--ready {
+  opacity: 1;
+}
+
+.photo-cell__img {
+  opacity: 0;
+  transition: opacity 0.35s ease-out;
+}
+
+.photo-cell__img--visible {
+  opacity: 1;
+}
+
+.gallery-cell {
+  background-color: #171717;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-cell__video,
+  .media-cell__canvas,
+  .photo-cell__img {
+    transition: opacity 0.15s ease-out;
+  }
+}

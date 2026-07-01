@@ -90,19 +90,13 @@ class MediaPreloader {
       stopIndex,
       items.length,
     )
-    this.maxCacheSize = maxCache
+    this.maxCacheSize = Math.max(maxCache, this.maxCacheSize)
 
-    const keep = new Set<string>()
     for (let i = from; i <= to; i++) {
       const item = items[i]
-      if (item.kind === 'image') {
-        keep.add(item.id)
+      if (item?.kind === 'image') {
         void this.prepare(item.id, item.handle, item.kind)
       }
-    }
-
-    for (const id of [...this.cache.keys()]) {
-      if (!keep.has(id)) this.evict(id)
     }
   }
 

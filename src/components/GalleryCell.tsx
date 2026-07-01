@@ -11,8 +11,10 @@ interface GalleryCellProps extends RenderComponentProps<MediaFile> {
 }
 
 export const GalleryCell = memo(function GalleryCell(props: GalleryCellProps) {
+  const cellKey = `${props.slotKey}:${props.data.id}:${props.data.kind}`
+
   if (props.data.kind === 'image') {
-    return <PhotoCell {...props} />
+    return <PhotoCell key={cellKey} {...props} />
   }
-  return <MediaCell {...props} />
+  return <MediaCell key={cellKey} {...props} />
 })

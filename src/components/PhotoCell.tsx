@@ -24,21 +24,22 @@ export const PhotoCell = memo(function PhotoCell({
 }: PhotoCellProps) {
   const cellRef = useRef<HTMLDivElement>(null)
   const failedRef = useRef(false)
+  const reportFailedRef = useRef<(key: string) => void>(() => {})
   const [src, setSrc] = useState<string | null>(() =>
     mediaPreloader.isReady(data.id) ? mediaPreloader.get(data.id) : null,
   )
   const [isReady, setIsReady] = useState(() => mediaPreloader.isReady(data.id))
-  const [inView, setInView] = useState(false)
   const { openFullScreen } = useFullScreen()
   const { reportSlotFailed } = useGalleryFallback()
+  reportFailedRef.current = reportSlotFailed
 
   const height = useCellHeight(width, data.id, aspectRatio, useFixedHeight)
 
   const failSlot = useCallback(() => {
     if (failedRef.current) return
     failedRef.current = true
-    reportSlotFailed(slotKey)
-  }, [slotKey, reportSlotFailed])
+    reportFailedRef.current(slotKey)
+  }, [slotKey])
 
   useEffect(() => {
     failedRef.current = false
@@ -58,7 +59,6 @@ export const PhotoCell = memo(function PhotoCell({
 
     const showWhenReady = async () => {
       const currentLoad = ++loadId
-      setIsReady(false)
 
       if (mediaPreloader.isReady(data.id)) {
         const cached = mediaPreloader.get(data.id)
@@ -68,6 +68,8 @@ export const PhotoCell = memo(function PhotoCell({
           return
         }
       }
+
+      setIsReady(false)
 
       const url = await mediaPreloader.prepare(data.id, data.handle, data.kind)
       if (cancelled || currentLoad !== loadId) return
@@ -88,11 +90,7 @@ export const PhotoCell = memo(function PhotoCell({
 
     const displayObserver = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
-        setInView(true)
         void showWhenReady()
-      } else {
-        setInView(false)
-        setIsReady(false)
       }
     }, PEEK_PLAYBACK_IO)
 
@@ -106,7 +104,17 @@ export const PhotoCell = memo(function PhotoCell({
     }
   }, [data.id, data.handle, data.kind, failSlot])
 
-  const showImage = Boolean(src && isReady && inView)
+  const handleImgError = () => {
+    void mediaPreloader
+      .prepare(data.id, data.handle, data.kind)
+      .then((url) => {
+        if (url) {
+          setSrc(url)
+          setIsReady(true)
+        }
+      })
+      .catch(() => failSlot())
+  }
 
   return (
     <div
@@ -117,7 +125,7 @@ export const PhotoCell = memo(function PhotoCell({
     >
       <FavoriteButton file={data} />
 
-      {showImage && (
+      {isReady && (
         <button
           type="button"
           onClick={() => openFullScreen(data)}
@@ -130,9 +138,9 @@ export const PhotoCell = memo(function PhotoCell({
           src={src}
           alt={data.name}
           decoding="async"
-          onError={failSlot}
+          onError={handleImgError}
           className={`photo-cell__img h-full w-full object-cover ${
-            showImage ? 'photo-cell__img--visible' : ''
+            isReady ? 'photo-cell__img--visible' : ''
           }`}
         />
       )}

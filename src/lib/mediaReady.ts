@@ -51,7 +51,7 @@ export function waitForVideoPlaying(video: HTMLVideoElement): Promise<void> {
 /** Intersection options: any pixel in view counts (peek-friendly). */
 export const PEEK_PLAYBACK_IO: IntersectionObserverInit = {
   threshold: 0,
-  rootMargin: '0px',
+  rootMargin: '120px 0px',
 }
 
 /** Wider zone for kicking off prepare before play. */

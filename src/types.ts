@@ -19,6 +19,8 @@ export interface ActiveFolder {
   imageCount: number
   videoCount: number
   addedAt: number
+  /** Permission lapsed (e.g. browser restart) and needs a user click to reconnect. */
+  needsPermission?: boolean
 }
 
 export interface StoredFolder {

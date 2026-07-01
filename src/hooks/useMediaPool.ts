@@ -10,12 +10,15 @@ import {
   ensureReadPermission,
   getActiveFolderIds,
   getFolder,
+  queryReadPermission,
   saveFolder,
   setActiveFolderIds,
   touchFolder,
 } from '../lib/folderStore'
 import {
   createDiversifiedSlots,
+  graftFilesIntoSlots,
+  appendDisplaySlots,
   pickSlotReplacement,
 } from '../lib/gallerySlots'
 import {
@@ -29,7 +32,12 @@ import {
   progressiveDualScanFolder,
   quickDualScanFolder,
 } from '../lib/progressiveScan'
-import type { ActiveFolder, GallerySlot, GalleryView, MediaFile } from '../types'
+import type {
+  ActiveFolder,
+  GallerySlot,
+  GalleryView,
+  MediaFile,
+} from '../types'
 import type { ScanResult } from '../lib/fileScanner'
 
 function mixDisplaySlots(pool: MediaFile[]): GallerySlot[] {
@@ -79,6 +87,10 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const [notice, setNotice] = useState<string | null>(null)
   const slotAttemptsRef = useRef(new Map<string, Set<string>>())
   const scanAbortRef = useRef(new Map<string, AbortController>())
+  const remixDebounceRef = useRef<ReturnType<typeof setTimeout>>(0)
+  const legacyRemixDebounceRef = useRef<ReturnType<typeof setTimeout>>(0)
+  const pendingGraftFilesRef = useRef<MediaFile[]>([])
+  const pendingLegacyGraftRef = useRef<MediaFile[]>([])
   const poolRef = useRef<MediaFile[]>([])
   const slotsRef = useRef<GallerySlot[]>([])
   const legacyPoolRef = useRef<MediaFile[]>([])
@@ -117,6 +129,78 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     legacySlotsRef.current = slots
     setLegacyDisplaySlots(slots)
   }, [])
+
+  const appendToGallery = useCallback((files: MediaFile[]) => {
+    if (files.length === 0) return
+    setDisplaySlots((prev) => {
+      const next = appendDisplaySlots(prev, files)
+      slotsRef.current = next
+      return next
+    })
+  }, [])
+
+  const appendToLegacyGallery = useCallback((files: MediaFile[]) => {
+    if (files.length === 0) return
+    setLegacyDisplaySlots((prev) => {
+      const next = appendDisplaySlots(prev, files)
+      legacySlotsRef.current = next
+      return next
+    })
+  }, [])
+
+  const graftIntoGallery = useCallback((files: MediaFile[]) => {
+    if (files.length === 0) return
+    setDisplaySlots((prev) => {
+      const next =
+        prev.length === 0
+          ? createDiversifiedSlots(files)
+          : graftFilesIntoSlots(prev, files)
+      slotsRef.current = next
+      return next
+    })
+  }, [])
+
+  const graftIntoLegacyGallery = useCallback((files: MediaFile[]) => {
+    if (files.length === 0) return
+    setLegacyDisplaySlots((prev) => {
+      const next =
+        prev.length === 0
+          ? createDiversifiedSlots(files)
+          : graftFilesIntoSlots(prev, files)
+      legacySlotsRef.current = next
+      return next
+    })
+  }, [])
+
+  const scheduleAppendToGallery = useCallback(
+    (files: MediaFile[]) => {
+      if (galleryViewRef.current.mode !== 'mixed' || files.length === 0) return
+      pendingGraftFilesRef.current.push(...files)
+      window.clearTimeout(remixDebounceRef.current)
+      remixDebounceRef.current = window.setTimeout(() => {
+        remixDebounceRef.current = 0
+        const batch = pendingGraftFilesRef.current
+        pendingGraftFilesRef.current = []
+        appendToGallery(batch)
+      }, 350)
+    },
+    [appendToGallery],
+  )
+
+  const scheduleAppendToLegacyGallery = useCallback(
+    (files: MediaFile[]) => {
+      if (files.length === 0) return
+      pendingLegacyGraftRef.current.push(...files)
+      window.clearTimeout(legacyRemixDebounceRef.current)
+      legacyRemixDebounceRef.current = window.setTimeout(() => {
+        legacyRemixDebounceRef.current = 0
+        const batch = pendingLegacyGraftRef.current
+        pendingLegacyGraftRef.current = []
+        appendToLegacyGallery(batch)
+      }, 350)
+    },
+    [appendToLegacyGallery],
+  )
 
   const reloadGrid = useCallback(
     (pool?: MediaFile[]) => {
@@ -279,6 +363,12 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
               poolRef.current = nextPool
               setMediaPool(nextPool)
               updateFolderCounts(folderId, folderFileList)
+              if (
+                galleryViewRef.current.mode === 'mixed' &&
+                batch.files.length > 0
+              ) {
+                scheduleAppendToGallery(batch.files)
+              }
             },
             onLegacyBackground: async (batch) => {
               for (const file of batch.files) {
@@ -290,6 +380,9 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
               )
               legacyPoolRef.current = nextLegacy
               setLegacyPool(nextLegacy)
+              if (batch.files.length > 0) {
+                scheduleAppendToLegacyGallery(batch.files)
+              }
             },
           },
           controller.signal,
@@ -312,11 +405,6 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           galleryTotals.unplayable,
         )
         if (skipNotice) setNotice(skipNotice)
-
-        if (galleryViewRef.current.mode === 'mixed') {
-          remixGallery(poolRef.current, { mode: 'mixed' })
-        }
-        remixLegacyGallery(legacyPoolRef.current)
       } catch (err) {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
           setError(err instanceof Error ? err.message : 'Background scan failed')
@@ -334,8 +422,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       updateFolderCounts,
       mergePoolForFolder,
       mergeLegacyPoolForFolder,
-      remixGallery,
-      remixLegacyGallery,
+      scheduleAppendToGallery,
+      scheduleAppendToLegacyGallery,
     ],
   )
 
@@ -386,7 +474,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         poolRef.current = nextPool
         setMediaPool(nextPool)
         setGalleryView({ mode: 'mixed' })
-        remixGallery(nextPool, { mode: 'mixed' })
+        graftIntoGallery(batch.files)
         updateFolderCounts(folderId, quickFiles)
         setIsScanning(false)
         setIsRestoring(false)
@@ -403,7 +491,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         )
         legacyPoolRef.current = nextLegacy
         setLegacyPool(nextLegacy)
-        remixLegacyGallery(nextLegacy)
+        graftIntoLegacyGallery(batch.files)
         if (batch.files.length > 0) setIsLegacyDiscovering(true)
       }
 
@@ -425,6 +513,12 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
             poolRef.current = nextPool
             setMediaPool(nextPool)
             updateFolderCounts(folderId, [...galleryFolderFiles.values()])
+            if (
+              galleryViewRef.current.mode === 'mixed' &&
+              batch.files.length > 0
+            ) {
+              scheduleAppendToGallery(batch.files)
+            }
           },
           onLegacyBackground: async (batch) => {
             for (const file of batch.files) {
@@ -436,6 +530,9 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
             )
             legacyPoolRef.current = nextLegacy
             setLegacyPool(nextLegacy)
+            if (batch.files.length > 0) {
+              scheduleAppendToLegacyGallery(batch.files)
+            }
           },
         })
 
@@ -459,11 +556,6 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           skipTotals.unplayable,
         )
         if (skipNotice) setNotice(skipNotice)
-
-        if (galleryViewRef.current.mode === 'mixed') {
-          remixGallery(poolRef.current, { mode: 'mixed' })
-        }
-        remixLegacyGallery(legacyPoolRef.current)
 
         const kinds = countByKind(allFolderFiles)
         return {
@@ -493,8 +585,10 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       updateFolderCounts,
       mergePoolForFolder,
       mergeLegacyPoolForFolder,
-      remixGallery,
-      remixLegacyGallery,
+      graftIntoGallery,
+      graftIntoLegacyGallery,
+      scheduleAppendToGallery,
+      scheduleAppendToLegacyGallery,
     ],
   )
 
@@ -515,16 +609,24 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       let skipTotals = { overLimit: 0, unplayable: 0 }
       let quickShown = false
 
+      // queryReadPermission never throws — requestPermission() would throw a
+      // SecurityError here (no user gesture on page load), which previously
+      // rejected this whole Promise.all and left the app stuck forever on
+      // "Restoring folders…" (i.e. a permanently blank grid).
       const quickResults = await Promise.all(
         ids.map(async (id) => {
           const stored = await getFolder(id)
           if (!stored) return null
 
-          const granted = await ensureReadPermission(stored.handle)
-          if (!granted) return null
+          const granted = await queryReadPermission(stored.handle)
+          if (!granted) return { stored, quick: null }
 
-          const quick = await quickDualScanFolder(stored.handle, id)
-          return { stored, quick }
+          try {
+            const quick = await quickDualScanFolder(stored.handle, id)
+            return { stored, quick }
+          } catch {
+            return { stored, quick: null }
+          }
         }),
       )
 
@@ -533,6 +635,23 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       for (const result of quickResults) {
         if (!result) continue
         const { stored, quick } = result
+
+        if (!quick) {
+          // Permission lapsed or scan failed — keep the folder visible with
+          // a reconnect affordance instead of silently dropping it.
+          loadedFolders.push({
+            id: stored.id,
+            name: stored.name,
+            handle: stored.handle,
+            fileCount: stored.fileCount,
+            imageCount: stored.imageCount,
+            videoCount: stored.videoCount,
+            addedAt: stored.addedAt,
+            needsPermission: true,
+          })
+          continue
+        }
+
         skipTotals = mergeSkipTotals(skipTotals, quick.gallery)
         allFiles = dedupeMediaFiles([...allFiles, ...quick.gallery.files])
         allLegacyFiles = dedupeMediaFiles([
@@ -584,7 +703,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       if (!quickShown || cancelled) return
 
       for (const result of quickResults) {
-        if (cancelled || !result) continue
+        if (cancelled || !result || !result.quick) continue
         const { stored, quick } = result
         void runBackgroundDualScan(
           stored.handle,
@@ -627,6 +746,37 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       setIsScanning(false)
     }
   }, [ingestFolder])
+
+  const reconnectFolder = useCallback(
+    async (folderId: string) => {
+      setError(null)
+      setIsScanning(true)
+      try {
+        const stored = await getFolder(folderId)
+        if (!stored) {
+          setError('Folder not found in history')
+          return false
+        }
+
+        // Called from a click handler, so this has real user activation and
+        // requestPermission() can succeed instead of throwing.
+        const granted = await ensureReadPermission(stored.handle)
+        if (!granted) {
+          setError('Permission was not granted for this folder')
+          return false
+        }
+
+        await ingestFolder(stored.handle, folderId)
+        return true
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to reconnect folder')
+        return false
+      } finally {
+        setIsScanning(false)
+      }
+    },
+    [ingestFolder],
+  )
 
   const loadFolderFromHistory = useCallback(
     async (folderId: string) => {
@@ -702,15 +852,14 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
 
         const onScreenIds = new Set(prev.map((slot) => slot.media.id))
         const visiblePool = resolveVisiblePool(
-          mediaPool,
-          galleryView,
-          favoriteIds,
+          poolRef.current,
+          galleryViewRef.current,
+          favoriteIdsRef.current,
         )
         const replacement = pickSlotReplacement(visiblePool, onScreenIds, tried)
 
         if (!replacement) {
-          slotAttemptsRef.current.delete(slotKey)
-          return prev.filter((slot) => slot.key !== slotKey)
+          return prev
         }
 
         tried.add(replacement.id)
@@ -726,7 +875,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         return next
       })
     },
-    [mediaPool, galleryView, favoriteIds],
+    [],
   )
 
   const reportLegacySlotFailed = useCallback(
@@ -742,14 +891,13 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
 
         const onScreenIds = new Set(prev.map((slot) => slot.media.id))
         const replacement = pickSlotReplacement(
-          legacyPool,
+          legacyPoolRef.current,
           onScreenIds,
           tried,
         )
 
         if (!replacement) {
-          slotAttemptsRef.current.delete(slotKey)
-          return prev.filter((slot) => slot.key !== slotKey)
+          return prev
         }
 
         tried.add(replacement.id)
@@ -765,7 +913,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         return next
       })
     },
-    [legacyPool],
+    [],
   )
 
   return {
@@ -787,6 +935,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     addFolder,
     removeFolder,
     loadFolderFromHistory,
+    reconnectFolder,
     refresh,
     refreshLegacy,
     reportSlotFailed,

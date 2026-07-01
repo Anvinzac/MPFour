@@ -8,6 +8,7 @@ import {
 import { MAX_ACTIVE_CANVAS_PLAYERS, PREVIEW_DURATION_SEC } from './constants'
 
 let activeCanvasPlayers = 0
+const slotWaitQueue: Array<() => void> = []
 const countListeners = new Set<() => void>()
 
 function notifyCountChange(): void {
@@ -25,6 +26,29 @@ export function subscribeCanvasPlayerCount(listener: () => void): () => void {
 
 export function canStartCanvasPlayer(): boolean {
   return activeCanvasPlayers < MAX_ACTIVE_CANVAS_PLAYERS
+}
+
+function reserveCanvasSlot(): Promise<void> {
+  if (canStartCanvasPlayer()) {
+    activeCanvasPlayers++
+    notifyCountChange()
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    slotWaitQueue.push(() => {
+      activeCanvasPlayers++
+      notifyCountChange()
+      resolve()
+    })
+  })
+}
+
+function releaseCanvasSlot(): void {
+  activeCanvasPlayers = Math.max(0, activeCanvasPlayers - 1)
+  notifyCountChange()
+  const next = slotWaitQueue.shift()
+  if (next) next()
 }
 
 export interface CanvasPlayerMountOptions {
@@ -74,53 +98,57 @@ export class CanvasGridPlayer {
     this.dispose()
 
     const usePoolSlot = options.usePoolSlot !== false
-    if (usePoolSlot && !canStartCanvasPlayer()) {
-      throw new Error('canvas player pool full')
-    }
-
-    const input = new Input({
-      source: new BlobSource(file),
-      formats: ALL_FORMATS,
-    })
-
-    const track = await input.getPrimaryVideoTrack()
-    if (!track) {
-      input.dispose()
-      throw new Error('no video track')
-    }
-
-    const decodable = await track.canDecode()
-    if (!decodable) {
-      input.dispose()
-      throw new Error('codec not decodable')
-    }
-
-    const duration = await input.computeDuration()
-    const loopTarget = options.loopFull
-      ? duration > 0
-        ? duration
-        : PREVIEW_DURATION_SEC
-      : (options.loopSeconds ??
-        Math.min(
-          PREVIEW_DURATION_SEC,
-          duration > 0 ? duration : PREVIEW_DURATION_SEC,
-        ))
-    this.loopEndSec = Math.max(0.1, loopTarget)
-
-    const sink = new CanvasSink(track, {
-      width: Math.max(1, Math.round(width)),
-      height: Math.max(1, Math.round(height)),
-      fit: 'cover',
-      poolSize: 2,
-    })
-
-    this.input = input
-    this.sink = sink
-    this.displayCanvas = canvas
     if (usePoolSlot) {
+      await reserveCanvasSlot()
       this.ownsSlot = true
-      activeCanvasPlayers++
-      notifyCountChange()
+    }
+
+    try {
+      const input = new Input({
+        source: new BlobSource(file),
+        formats: ALL_FORMATS,
+      })
+
+      const track = await input.getPrimaryVideoTrack()
+      if (!track) {
+        input.dispose()
+        throw new Error('no video track')
+      }
+
+      const decodable = await track.canDecode()
+      if (!decodable) {
+        input.dispose()
+        throw new Error('codec not decodable')
+      }
+
+      const duration = await input.computeDuration()
+      const loopTarget = options.loopFull
+        ? duration > 0
+          ? duration
+          : PREVIEW_DURATION_SEC
+        : (options.loopSeconds ??
+          Math.min(
+            PREVIEW_DURATION_SEC,
+            duration > 0 ? duration : PREVIEW_DURATION_SEC,
+          ))
+      this.loopEndSec = Math.max(0.1, loopTarget)
+
+      const sink = new CanvasSink(track, {
+        width: Math.max(1, Math.round(width)),
+        height: Math.max(1, Math.round(height)),
+        fit: 'cover',
+        poolSize: 2,
+      })
+
+      this.input = input
+      this.sink = sink
+      this.displayCanvas = canvas
+    } catch (err) {
+      if (this.ownsSlot) {
+        this.ownsSlot = false
+        releaseCanvasSlot()
+      }
+      throw err
     }
   }
 
@@ -148,9 +176,8 @@ export class CanvasGridPlayer {
   dispose(): void {
     this.stop()
     if (this.ownsSlot) {
-      activeCanvasPlayers = Math.max(0, activeCanvasPlayers - 1)
       this.ownsSlot = false
-      notifyCountChange()
+      releaseCanvasSlot()
     }
     this.input?.dispose()
     this.input = null
@@ -176,9 +203,16 @@ export class CanvasGridPlayer {
       const elapsedSec =
         ((performance.now() - this.startMs) / 1000) % this.loopEndSec
       const wrapped = await this.sink.getCanvas(elapsedSec)
-      if (wrapped && this.playing) this.blit(wrapped)
+      if (wrapped && this.playing) {
+        this.blit(wrapped)
+      }
     } catch {
       this.playing = false
+      try {
+        await this.showFirstFrame()
+      } catch {
+        // keep last painted frame
+      }
     } finally {
       this.ticking = false
       if (this.playing) this.scheduleFrame()

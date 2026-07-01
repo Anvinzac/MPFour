@@ -18,14 +18,15 @@ export function useCellHeight(
   aspectRatio: number,
   useFixedHeight = false,
 ): number {
-  if (useFixedHeight) {
-    return width / DEFAULT_ASPECT_RATIO
-  }
   const entry = useRef<HeightEntry>({
     id: itemId,
     height: width / DEFAULT_ASPECT_RATIO,
     locked: false,
   })
+
+  if (useFixedHeight) {
+    return width / DEFAULT_ASPECT_RATIO
+  }
 
   if (entry.current.id !== itemId) {
     entry.current = {

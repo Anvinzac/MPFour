@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header } from './components/Header'
 import { FolderChips } from './components/FolderChips'
 import { EmptyState } from './components/EmptyState'
@@ -33,6 +34,7 @@ function AppContent() {
     addFolder,
     removeFolder,
     loadFolderFromHistory,
+    reconnectFolder,
     refresh,
     refreshLegacy,
     reportSlotFailed,
@@ -141,6 +143,7 @@ function AppContent() {
         <FolderChips
           folders={activeFolders}
           onRemove={removeFolder}
+          onReconnect={(folderId) => void reconnectFolder(folderId)}
           disabled={busy}
         />
 
@@ -152,15 +155,17 @@ function AppContent() {
         />
 
         {notice && (
-          <div className="mx-4 mt-3 flex items-center justify-between rounded-lg border border-amber-900/50 bg-amber-950/40 px-4 py-2 text-sm text-amber-200">
-            <span>{notice}</span>
-            <button
-              type="button"
-              onClick={clearNotice}
-              className="ml-4 text-amber-300 hover:text-amber-100"
-            >
-              Dismiss
-            </button>
+          <div className="pointer-events-none fixed inset-x-0 top-14 z-[45] px-4">
+            <div className="pointer-events-auto mx-auto flex max-w-7xl items-center justify-between rounded-lg border border-amber-900/50 bg-amber-950/95 px-4 py-2 text-sm text-amber-200 shadow-lg backdrop-blur-sm">
+              <span>{notice}</span>
+              <button
+                type="button"
+                onClick={clearNotice}
+                className="ml-4 shrink-0 text-amber-300 hover:text-amber-100"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
@@ -206,13 +211,31 @@ function AppContent() {
   )
 }
 
+function AppCrashFallback(error: Error, reset: () => void) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-neutral-950 px-6 text-center text-white">
+      <p className="text-lg font-medium">Something went wrong rendering the gallery.</p>
+      <p className="max-w-md text-sm text-neutral-500">{error.message}</p>
+      <button
+        type="button"
+        onClick={reset}
+        className="rounded-full bg-white px-4 py-2 text-sm font-medium text-neutral-950 hover:bg-neutral-200"
+      >
+        Try again
+      </button>
+    </div>
+  )
+}
+
 function App() {
   return (
-    <FavoritesProvider>
-      <FullScreenProvider>
-        <AppContent />
-      </FullScreenProvider>
-    </FavoritesProvider>
+    <ErrorBoundary fallback={AppCrashFallback}>
+      <FavoritesProvider>
+        <FullScreenProvider>
+          <AppContent />
+        </FullScreenProvider>
+      </FavoritesProvider>
+    </ErrorBoundary>
   )
 }
 

@@ -82,10 +82,32 @@ export function setActiveFolderIds(ids: string[]): void {
   localStorage.setItem(ACTIVE_KEY, JSON.stringify(ids))
 }
 
+/**
+ * Never throws — safe to call during automatic restore (page load, no user
+ * gesture). `requestPermission` under those conditions throws a
+ * `SecurityError` rather than returning 'denied', which — if uncaught —
+ * rejects the whole `Promise.all` restore batch and leaves the app stuck on
+ * "Restoring folders…" forever (a blank grid with no error surfaced).
+ */
+export async function queryReadPermission(
+  handle: FileSystemDirectoryHandle,
+): Promise<boolean> {
+  try {
+    return (await handle.queryPermission({ mode: 'read' })) === 'granted'
+  } catch {
+    return false
+  }
+}
+
+/** Requires a user gesture (click). Use only from direct click handlers. */
 export async function ensureReadPermission(
   handle: FileSystemDirectoryHandle,
 ): Promise<boolean> {
   const options = { mode: 'read' as const }
-  if ((await handle.queryPermission(options)) === 'granted') return true
-  return (await handle.requestPermission(options)) === 'granted'
+  try {
+    if ((await handle.queryPermission(options)) === 'granted') return true
+    return (await handle.requestPermission(options)) === 'granted'
+  } catch {
+    return false
+  }
 }

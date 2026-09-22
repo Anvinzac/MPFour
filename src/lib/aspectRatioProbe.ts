@@ -1,7 +1,9 @@
 import { DEFAULT_ASPECT_RATIO } from '../types'
 import type { MediaKind } from '../types'
 
-const CONCURRENCY = 2
+const CONCURRENCY = 6
+/** Per-file metadata probe timeout — prevents a hung probe from blocking the grid. */
+const PROBE_TIMEOUT_MS = 8000
 
 type Listener = () => void
 
@@ -48,12 +50,38 @@ class AspectRatioProbe {
     }
   }
 
+  /**
+   * Probe a batch of files and resolve only once every ratio is cached.
+   * Used as a pre-check so cells are created with correct dimensions from
+   * the first paint instead of guessing 16:9 and reflowing later.
+   */
+  async probeBatch(items: QueueItem[]): Promise<void> {
+    const pending = items.filter((item) => !this.cache.has(item.id))
+    if (pending.length === 0) return
+
+    // Remove these from the async queue so the drain doesn't double-probe.
+    const pendingIds = new Set(pending.map((item) => item.id))
+    this.queue = this.queue.filter((item) => !pendingIds.has(item.id))
+
+    let index = 0
+    const workers = Array.from(
+      { length: Math.min(CONCURRENCY, pending.length) },
+      async () => {
+        while (index < pending.length) {
+          const item = pending[index++]
+          await this.probeItem(item)
+        }
+      },
+    )
+    await Promise.all(workers)
+  }
+
   private drain(): void {
     while (this.active < CONCURRENCY && this.queue.length > 0) {
       const item = this.queue.shift()
       if (!item) break
       this.active++
-      this.probe(item).finally(() => {
+      this.probeItem(item).finally(() => {
         this.active--
         this.drain()
       })
@@ -68,17 +96,26 @@ class AspectRatioProbe {
     }
   }
 
-  private async probe({ id, handle, kind }: QueueItem): Promise<void> {
+  private async probeItem({ id, handle, kind }: QueueItem): Promise<void> {
     if (this.cache.has(id)) return
 
     const file = await handle.getFile()
     const url = URL.createObjectURL(file)
 
     try {
-      const ratio =
+      const read =
         kind === 'image'
-          ? await this.readImageMetadata(url)
-          : await this.readVideoMetadata(url)
+          ? this.readImageMetadata(url)
+          : this.readVideoMetadata(url)
+      const ratio = await Promise.race([
+        read,
+        new Promise<never>((_, reject) =>
+          window.setTimeout(
+            () => reject(new Error('aspect probe timeout')),
+            PROBE_TIMEOUT_MS,
+          ),
+        ),
+      ])
       this.commit(id, ratio)
     } catch {
       this.commit(id, DEFAULT_ASPECT_RATIO)

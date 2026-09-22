@@ -38,7 +38,7 @@ export function useGalleryRenderer() {
         <ErrorBoundary
           key={cellKey}
           fallback={<BrokenCell data={media} width={props.width} height={height} />}
-          onError={() => reportSlotFailed(slotKey)}
+          onError={() => reportSlotFailed(slotKey, media.kind)}
         >
           <GalleryCell
             {...props}

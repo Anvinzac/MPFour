@@ -16,6 +16,7 @@ interface FavoritesContextValue {
   toggleFavorite: (file: MediaFile, rootFolderName: string) => Promise<void>
   isLoading: boolean
   error: string | null
+  clearError: () => void
 }
 
 const FavoritesContext = createContext<FavoritesContextValue | null>(null)
@@ -48,6 +49,8 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
     () => new Set(records.map((record) => record.media_id)),
     [records],
   )
+
+  const clearError = useCallback(() => setError(null), [])
 
   const isFavorite = useCallback(
     (mediaId: string) => favoriteIds.has(mediaId),
@@ -113,8 +116,9 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
       toggleFavorite,
       isLoading,
       error,
+      clearError,
     }),
-    [favoriteIds, isFavorite, toggleFavorite, isLoading, error],
+    [favoriteIds, isFavorite, toggleFavorite, isLoading, error, clearError],
   )
 
   return (

@@ -2,8 +2,10 @@ import type { MediaStats } from '../types'
 
 interface HeaderProps {
   onAddFolder: () => void
+  onBrowse: () => void
   onRefresh: () => void
   onOpenHistory: () => void
+  onClearAll?: () => void
   onOpenLegacy?: () => void
   legacyCount?: number
   playingCount: number
@@ -34,7 +36,9 @@ function formatStats(stats: MediaStats, playingCount: number): string {
 
 export function Header({
   onAddFolder,
+  onBrowse,
   onRefresh,
+  onClearAll,
   onOpenHistory,
   onOpenLegacy,
   legacyCount = 0,
@@ -45,7 +49,7 @@ export function Header({
   hasMedia,
 }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-50 border-b border-neutral-800 bg-neutral-950/90 backdrop-blur-sm">
+    <header className="border-b border-neutral-800 bg-neutral-950/90 backdrop-blur-sm">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <h1 className="shrink-0 text-lg font-semibold tracking-tight">
@@ -96,12 +100,31 @@ export function Header({
           </button>
           <button
             type="button"
+            onClick={onBrowse}
+            disabled={isScanning}
+            className="rounded-lg border border-neutral-700 px-3 py-2 text-sm font-medium text-neutral-100 transition hover:border-neutral-500 hover:bg-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Pick a root folder, then drill into subfolders"
+          >
+            Browse…
+          </button>
+          <button
+            type="button"
             onClick={onRefresh}
             disabled={!hasMedia || isScanning}
             className="rounded-lg border border-neutral-700 px-4 py-2 text-sm font-medium text-neutral-100 transition hover:border-neutral-500 hover:bg-neutral-900 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Refresh
           </button>
+          {onClearAll && hasMedia && (
+            <button
+              type="button"
+              onClick={onClearAll}
+              disabled={isScanning}
+              className="rounded-lg border border-red-800/60 bg-red-950/40 px-4 py-2 text-sm font-medium text-red-300 transition hover:border-red-600 hover:bg-red-950/70 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear All
+            </button>
+          )}
         </div>
       </div>
     </header>

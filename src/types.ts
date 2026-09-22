@@ -34,10 +34,12 @@ export interface StoredFolder {
   videoCount: number
 }
 
-export const COLUMN_WIDTH = 520
+export const COLUMN_WIDTH = 360
 export const DEFAULT_ASPECT_RATIO = 16 / 9
 
 export type AppView = 'grid' | 'history' | 'legacy'
+
+export type { PickerStartIn } from './lib/fileScanner'
 
 export interface MediaStats {
   images: number

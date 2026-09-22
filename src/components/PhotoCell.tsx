@@ -7,7 +7,7 @@ import { mediaPreloader } from '../lib/mediaPreloader'
 import { PEEK_PLAYBACK_IO, PEEK_PREPARE_IO } from '../lib/mediaReady'
 import { CellPathLabel } from './CellPathLabel'
 import { FavoriteButton } from './FavoriteButton'
-import type { MediaFile } from '../types'
+import type { MediaFile, MediaKind } from '../types'
 
 interface PhotoCellProps extends RenderComponentProps<MediaFile> {
   slotKey: string
@@ -24,7 +24,7 @@ export const PhotoCell = memo(function PhotoCell({
 }: PhotoCellProps) {
   const cellRef = useRef<HTMLDivElement>(null)
   const failedRef = useRef(false)
-  const reportFailedRef = useRef<(key: string) => void>(() => {})
+  const reportFailedRef = useRef<(key: string, kind: MediaKind) => void>(() => {})
   const [src, setSrc] = useState<string | null>(() =>
     mediaPreloader.isReady(data.id) ? mediaPreloader.get(data.id) : null,
   )
@@ -38,8 +38,8 @@ export const PhotoCell = memo(function PhotoCell({
   const failSlot = useCallback(() => {
     if (failedRef.current) return
     failedRef.current = true
-    reportFailedRef.current(slotKey)
-  }, [slotKey])
+    reportFailedRef.current(slotKey, data.kind)
+  }, [slotKey, data.kind])
 
   useEffect(() => {
     failedRef.current = false

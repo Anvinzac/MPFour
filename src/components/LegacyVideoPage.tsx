@@ -1,7 +1,7 @@
 import { MasonryGrid } from './MasonryGrid'
 import { useCanvasPlayerCount } from '../hooks/useCanvasPlayerCount'
 import { GalleryActionsProvider } from '../hooks/useGalleryActions'
-import type { GallerySlot, GalleryView, MediaFile } from '../types'
+import type { GallerySlot, GalleryView, MediaFile, MediaKind } from '../types'
 
 interface LegacyVideoPageProps {
   legacyItems: GallerySlot[]
@@ -10,7 +10,8 @@ interface LegacyVideoPageProps {
   isScanning: boolean
   onBack: () => void
   onRefresh: () => void
-  reportSlotFailed: (slotKey: string) => void
+  reportSlotFailed: (slotKey: string, kind: MediaKind) => void
+  onNearEnd?: () => void
   filterToSubfolder: (file: MediaFile) => void
   showMixedGallery: () => void
   showFavoritesGallery: () => void
@@ -26,6 +27,7 @@ export function LegacyVideoPage({
   onBack,
   onRefresh,
   reportSlotFailed,
+  onNearEnd,
   filterToSubfolder,
   showMixedGallery,
   showFavoritesGallery,
@@ -89,7 +91,11 @@ export function LegacyVideoPage({
           </div>
 
           {legacyItems.length > 0 ? (
-            <MasonryGrid slots={legacyItems} onSlotFailed={reportSlotFailed} />
+            <MasonryGrid
+              slots={legacyItems}
+              onSlotFailed={reportSlotFailed}
+              onNearEnd={onNearEnd}
+            />
           ) : isScanning || isDiscovering ? (
             <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">
               Scanning for legacy videos…

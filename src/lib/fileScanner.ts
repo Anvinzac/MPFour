@@ -97,8 +97,87 @@ export async function scanAndValidateDirectory(
   }
 }
 
-export async function pickDirectory(): Promise<FileSystemDirectoryHandle> {
-  return window.showDirectoryPicker({ mode: 'read' })
+/**
+ * Well-known startIn locations the File System Access API can jump the
+ * native picker to. `'home'` is the OS home directory — closest thing to a
+ * "root" we can offer the browser. Not all browsers implement every preset;
+ * {@link pickDirectory} feature-detects and falls back to the default picker.
+ */
+export type PickerStartIn =
+  | 'home'
+  | 'documents'
+  | 'downloads'
+  | 'desktop'
+  | 'music'
+  | 'pictures'
+  | 'videos'
+
+export async function pickDirectory(
+  startIn?: PickerStartIn | FileSystemDirectoryHandle,
+): Promise<FileSystemDirectoryHandle> {
+  const options: Parameters<typeof window.showDirectoryPicker>[0] = {
+    mode: 'read',
+  }
+  if (startIn) {
+    // `'home'` is part of our PickerStartIn union but not in the lib's typings
+    // for `startIn` (Chromium's union omits it). The runtime accepts the full
+    // File System Access spec, so we cast through `unknown`.
+    options.startIn = startIn as unknown as NonNullable<
+      Parameters<typeof window.showDirectoryPicker>[0]
+    >['startIn']
+  }
+  return window.showDirectoryPicker(options)
+}
+
+export interface DirectoryListing {
+  directories: { name: string; handle: FileSystemDirectoryHandle }[]
+  mediaCount: number
+}
+
+/**
+ * Lightweight directory listing for the file-tree UI: just folder names and
+ * a media count (no recursive walk, no handle decoding). Iterating
+ * `dir.values()` only resolves the directory handles' names lazily, so we
+ * still have to await every entry to count files — but it's a single
+ * shallow pass and far cheaper than {@link scanDirectory}.
+ */
+export async function listDirectory(
+  dir: FileSystemDirectoryHandle,
+): Promise<DirectoryListing> {
+  const directories: DirectoryListing['directories'] = []
+  let mediaCount = 0
+
+  for await (const entry of dir.values()) {
+    if (entry.kind === 'directory') {
+      directories.push({ name: entry.name, handle: entry })
+    } else if (entry.kind === 'file' && isGalleryMediaFile(entry.name)) {
+      mediaCount++
+    }
+  }
+
+  directories.sort((a, b) => a.name.localeCompare(b.name))
+  return { directories, mediaCount }
+}
+
+/**
+ * Resolves a subfolder path (e.g. `Documents/Vacation`) within an already
+ * granted root handle and returns its directory handle. The caller is
+ * responsible for kicking off the scan via `ingestFolder` so the subfolder
+ * joins the same pool as roots picked via the native dialog.
+ */
+export async function resolveSubfolder(
+  root: FileSystemDirectoryHandle,
+  subPath: string,
+): Promise<FileSystemDirectoryHandle> {
+  const segments = subPath
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  let current = root
+  for (const segment of segments) {
+    current = await current.getDirectoryHandle(segment, { create: false })
+  }
+  return current
 }
 
 export function dedupeMediaFiles(files: MediaFile[]): MediaFile[] {

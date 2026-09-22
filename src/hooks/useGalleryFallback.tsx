@@ -1,7 +1,8 @@
 import { createContext, useContext, type ReactNode } from 'react'
+import type { MediaKind } from '../types'
 
 interface GalleryFallbackContextValue {
-  reportSlotFailed: (slotKey: string) => void
+  reportSlotFailed: (slotKey: string, kind: MediaKind) => void
 }
 
 const GalleryFallbackContext = createContext<GalleryFallbackContextValue | null>(
@@ -12,7 +13,7 @@ export function GalleryFallbackProvider({
   onSlotFailed,
   children,
 }: {
-  onSlotFailed: (slotKey: string) => void
+  onSlotFailed: (slotKey: string, kind: MediaKind) => void
   children: ReactNode
 }) {
   return (

@@ -42,6 +42,8 @@ export const MediaCell = memo(function MediaCell({
 
   const reportFailedRef = useRef(reportSlotFailed)
   reportFailedRef.current = reportSlotFailed
+  const mediaKindRef = useRef(data.kind)
+  mediaKindRef.current = data.kind
 
   useEffect(() => {
     const el = cellRef.current
@@ -55,7 +57,7 @@ export const MediaCell = memo(function MediaCell({
     const failSlot = () => {
       if (failedRef.current || cancelled) return
       failedRef.current = true
-      reportFailedRef.current(slotKey)
+      reportFailedRef.current(slotKey, mediaKindRef.current)
     }
 
     const releasePlayer = () => {

@@ -5,7 +5,11 @@ import {
   Input,
   type WrappedCanvas,
 } from 'mediabunny'
-import { MAX_ACTIVE_CANVAS_PLAYERS, PREVIEW_DURATION_SEC } from './constants'
+import {
+  CANVAS_SLOT_TIMEOUT_MS,
+  MAX_ACTIVE_CANVAS_PLAYERS,
+  PREVIEW_DURATION_SEC,
+} from './constants'
 
 let activeCanvasPlayers = 0
 const slotWaitQueue: Array<() => void> = []
@@ -28,19 +32,30 @@ export function canStartCanvasPlayer(): boolean {
   return activeCanvasPlayers < MAX_ACTIVE_CANVAS_PLAYERS
 }
 
-function reserveCanvasSlot(): Promise<void> {
+function reserveCanvasSlot(timeoutMs = CANVAS_SLOT_TIMEOUT_MS): Promise<void> {
   if (canStartCanvasPlayer()) {
     activeCanvasPlayers++
     notifyCountChange()
     return Promise.resolve()
   }
 
-  return new Promise((resolve) => {
-    slotWaitQueue.push(() => {
+  return new Promise<void>((resolve, reject) => {
+    let resolver: () => void
+
+    const timer = window.setTimeout(() => {
+      const idx = slotWaitQueue.indexOf(resolver)
+      if (idx >= 0) slotWaitQueue.splice(idx, 1)
+      reject(new Error('canvas slot timeout'))
+    }, timeoutMs)
+
+    resolver = () => {
+      window.clearTimeout(timer)
       activeCanvasPlayers++
       notifyCountChange()
       resolve()
-    })
+    }
+
+    slotWaitQueue.push(resolver)
   })
 }
 
@@ -87,6 +102,8 @@ export class CanvasGridPlayer {
   private loopEndSec = PREVIEW_DURATION_SEC
   private displayCanvas: HTMLCanvasElement | null = null
   private ownsSlot = false
+  private disposed = false
+  private frameCount = 0
 
   async mount(
     file: File,
@@ -96,10 +113,18 @@ export class CanvasGridPlayer {
     options: CanvasPlayerMountOptions = {},
   ): Promise<void> {
     this.dispose()
+    this.disposed = false
 
     const usePoolSlot = options.usePoolSlot !== false
     if (usePoolSlot) {
       await reserveCanvasSlot()
+      // dispose() may have run while we were waiting for a slot. If so,
+      // release the slot we just acquired so it doesn't leak and block
+      // every future player.
+      if (this.disposed) {
+        releaseCanvasSlot()
+        return
+      }
       this.ownsSlot = true
     }
 
@@ -173,7 +198,17 @@ export class CanvasGridPlayer {
     }
   }
 
+  /** Number of frames successfully blitted to the display canvas. */
+  getFrameCount(): number {
+    return this.frameCount
+  }
+
+  isPlaying(): boolean {
+    return this.playing
+  }
+
   dispose(): void {
+    this.disposed = true
     this.stop()
     if (this.ownsSlot) {
       this.ownsSlot = false
@@ -225,5 +260,6 @@ export class CanvasGridPlayer {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.drawImage(wrapped.canvas, 0, 0, canvas.width, canvas.height)
+    this.frameCount++
   }
 }

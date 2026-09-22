@@ -27,6 +27,16 @@ class MediaPreloader {
     return entry.url
   }
 
+  /** Number of items currently held in the blob URL cache. */
+  get size(): number {
+    return this.cache.size
+  }
+
+  /** Largest cache size the LRU will grow to (driven by the active+lookahead window). */
+  get maxSize(): number {
+    return this.maxCacheSize
+  }
+
   async prepare(
     id: string,
     handle: FileSystemFileHandle,

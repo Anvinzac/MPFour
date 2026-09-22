@@ -1,20 +1,24 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { Masonry } from 'masonic'
 import { GalleryFallbackProvider } from '../hooks/useGalleryFallback'
 import { useGalleryRenderer } from '../hooks/useGalleryRenderer'
 import { aspectRatioProbe } from '../lib/aspectRatioProbe'
+import { SCAFFOLD_LOAD_AHEAD } from '../lib/constants'
 import { mediaPreloader } from '../lib/mediaPreloader'
-import { COLUMN_WIDTH, DEFAULT_ASPECT_RATIO, type GallerySlot } from '../types'
+import { COLUMN_WIDTH, DEFAULT_ASPECT_RATIO, type GallerySlot, type MediaKind } from '../types'
 
 interface MasonryGridProps {
   slots: GallerySlot[]
-  onSlotFailed: (slotKey: string) => void
+  onSlotFailed: (slotKey: string, kind: MediaKind) => void
+  /** Called when the user scrolls near the end — load the next scaffold batch. */
+  onNearEnd?: () => void
 }
 
 const STABLE_HEIGHT_ESTIMATE = COLUMN_WIDTH / DEFAULT_ASPECT_RATIO
 
-export function MasonryGrid({ slots, onSlotFailed }: MasonryGridProps) {
+export function MasonryGrid({ slots, onSlotFailed, onNearEnd }: MasonryGridProps) {
   const render = useGalleryRenderer()
+  const nearEndTimerRef = useRef(0)
 
   const handleRender = useCallback(
     (startIndex: number, stopIndex: number) => {
@@ -37,8 +41,20 @@ export function MasonryGrid({ slots, onSlotFailed }: MasonryGridProps) {
             kind: item.kind,
           })),
       )
+
+      if (
+        onNearEnd &&
+        slots.length > 0 &&
+        stopIndex >= slots.length - SCAFFOLD_LOAD_AHEAD
+      ) {
+        window.clearTimeout(nearEndTimerRef.current)
+        nearEndTimerRef.current = window.setTimeout(() => {
+          nearEndTimerRef.current = 0
+          onNearEnd()
+        }, 200)
+      }
     },
-    [slots],
+    [slots, onNearEnd],
   )
 
   return (

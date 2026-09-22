@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header } from './components/Header'
 import { FolderChips } from './components/FolderChips'
@@ -7,16 +7,22 @@ import { HistoryPage } from './components/HistoryPage'
 import { LegacyVideoPage } from './components/LegacyVideoPage'
 import { MasonryGrid } from './components/MasonryGrid'
 import { GalleryFilterBar } from './components/GalleryFilterBar'
+import { FileTreeExplorer } from './components/FileTreeExplorer'
+import { MemoryChip } from './components/MemoryChip'
 import { useCanvasPlayerCount } from './hooks/useCanvasPlayerCount'
 import { FullScreenProvider } from './hooks/useFullScreen'
 import { FavoritesProvider, useFavorites } from './hooks/useFavorites'
 import { GalleryActionsProvider } from './hooks/useGalleryActions'
 import { useMediaPool } from './hooks/useMediaPool'
-import type { AppView } from './types'
+import type { AppView, PickerStartIn } from './types'
 
 function AppContent() {
   const [view, setView] = useState<AppView>('grid')
-  const { favoriteIds, error: favoritesError } = useFavorites()
+  const [explorerOpen, setExplorerOpen] = useState(false)
+  const [explorerPreset, setExplorerPreset] = useState<PickerStartIn | undefined>(
+    undefined,
+  )
+  const { favoriteIds, error: favoritesError, clearError: clearFavoritesError } = useFavorites()
   const {
     activeFolders,
     mediaPool,
@@ -32,9 +38,13 @@ function AppContent() {
     error,
     notice,
     addFolder,
+    addHandle,
     removeFolder,
+    clearAllFolders,
     loadFolderFromHistory,
     reconnectFolder,
+    loadMoreGallery,
+    loadMoreLegacy,
     refresh,
     refreshLegacy,
     reportSlotFailed,
@@ -46,6 +56,24 @@ function AppContent() {
     clearError,
     clearNotice,
   } = useMediaPool(favoriteIds)
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(clearNotice, 5000)
+    return () => window.clearTimeout(timer)
+  }, [notice, clearNotice])
+
+  useEffect(() => {
+    if (!favoritesError) return
+    const timer = window.setTimeout(clearFavoritesError, 5000)
+    return () => window.clearTimeout(timer)
+  }, [favoritesError, clearFavoritesError])
+
+  useEffect(() => {
+    if (!error) return
+    const timer = window.setTimeout(clearError, 5000)
+    return () => window.clearTimeout(timer)
+  }, [error, clearError])
 
   const playingCount = useCanvasPlayerCount()
   const busy = isScanning || isRestoring
@@ -69,83 +97,118 @@ function AppContent() {
 
   if (view === 'legacy') {
     return (
-      <LegacyVideoPage
-        legacyItems={legacyDisplayItems}
-        legacyCount={legacyCount}
-        isDiscovering={isLegacyDiscovering}
-        isScanning={busy}
-        onBack={() => setView('grid')}
-        onRefresh={refreshLegacy}
-        reportSlotFailed={reportLegacySlotFailed}
-        filterToSubfolder={(file) => {
-          filterToSubfolder(file)
-          setView('grid')
-        }}
-        showMixedGallery={() => {
-          showMixedGallery()
-          setView('grid')
-        }}
-        showFavoritesGallery={() => {
-          showFavoritesGallery()
-          setView('grid')
-        }}
-        rootFolderName={rootFolderName}
-        galleryView={galleryView}
-      />
+      <>
+        <LegacyVideoPage
+          legacyItems={legacyDisplayItems}
+          legacyCount={legacyCount}
+          isDiscovering={isLegacyDiscovering}
+          isScanning={busy}
+          onBack={() => setView('grid')}
+          onRefresh={refreshLegacy}
+          reportSlotFailed={reportLegacySlotFailed}
+          filterToSubfolder={(file) => {
+            filterToSubfolder(file)
+            setView('grid')
+          }}
+          showMixedGallery={() => {
+            showMixedGallery()
+            setView('grid')
+          }}
+          showFavoritesGallery={() => {
+            showFavoritesGallery()
+            setView('grid')
+          }}
+          rootFolderName={rootFolderName}
+          galleryView={galleryView}
+          onNearEnd={() => void loadMoreLegacy()}
+        />
+        <FileTreeExplorer
+          open={explorerOpen}
+          initialPreset={explorerPreset}
+          onClose={() => setExplorerOpen(false)}
+          onPick={async (handle, name) => {
+            await addHandle(handle, name)
+          }}
+        />
+      </>
     )
   }
 
   if (view === 'history') {
     return (
-      <div className="min-h-screen bg-neutral-950 text-white">
-        <Header
-          onAddFolder={() => {
-            setView('grid')
-            void addFolder()
+      <>
+        <div className="min-h-screen bg-neutral-950 text-white">
+          <div className="sticky top-0 z-50">
+            <Header
+              onAddFolder={() => {
+                setView('grid')
+                void addFolder()
+              }}
+              onBrowse={() => {
+                setView('grid')
+                setExplorerPreset(undefined)
+                setExplorerOpen(true)
+              }}
+              onRefresh={refresh}
+              onOpenHistory={() => setView('history')}
+              onOpenLegacy={() => setView('legacy')}
+              legacyCount={legacyCount}
+              playingCount={playingCount}
+              mediaStats={mediaStats}
+              isScanning={busy}
+              isDiscovering={isDiscovering}
+              hasMedia={displayItems.length > 0}
+            />
+          </div>
+          <HistoryPage
+            activeFolderIds={activeFolders.map((f) => f.id)}
+            onBack={() => setView('grid')}
+            onLoadFolder={loadFolderFromHistory}
+            onRemoveActive={removeFolder}
+            isLoading={isScanning}
+          />
+        </div>
+        <FileTreeExplorer
+          open={explorerOpen}
+          initialPreset={explorerPreset}
+          onClose={() => setExplorerOpen(false)}
+          onPick={async (handle, name) => {
+            await addHandle(handle, name)
           }}
-          onRefresh={refresh}
-          onOpenHistory={() => setView('history')}
-          onOpenLegacy={() => setView('legacy')}
-          legacyCount={legacyCount}
-          playingCount={playingCount}
-          mediaStats={mediaStats}
-          isScanning={busy}
-          isDiscovering={isDiscovering}
-          hasMedia={displayItems.length > 0}
         />
-        <HistoryPage
-          activeFolderIds={activeFolders.map((f) => f.id)}
-          onBack={() => setView('grid')}
-          onLoadFolder={loadFolderFromHistory}
-          onRemoveActive={removeFolder}
-          isLoading={isScanning}
-        />
-      </div>
+      </>
     )
   }
 
   return (
     <GalleryActionsProvider value={galleryActions}>
       <div className="min-h-screen bg-neutral-950 text-white">
-        <Header
-          onAddFolder={addFolder}
-          onRefresh={refresh}
-          onOpenHistory={() => setView('history')}
-          onOpenLegacy={() => setView('legacy')}
-          legacyCount={legacyCount}
-          playingCount={playingCount}
-          mediaStats={mediaStats}
-          isScanning={busy}
-          isDiscovering={isDiscovering}
-          hasMedia={displayItems.length > 0}
-        />
+        <div className="sticky top-0 z-50">
+          <Header
+            onAddFolder={addFolder}
+            onBrowse={() => {
+              setExplorerPreset(undefined)
+              setExplorerOpen(true)
+            }}
+            onRefresh={refresh}
+            onClearAll={clearAllFolders}
+            onOpenHistory={() => setView('history')}
+            onOpenLegacy={() => setView('legacy')}
+            legacyCount={legacyCount}
+            playingCount={playingCount}
+            mediaStats={mediaStats}
+            isScanning={busy}
+            isDiscovering={isDiscovering}
+            hasMedia={displayItems.length > 0}
+          />
 
-        <FolderChips
-          folders={activeFolders}
-          onRemove={removeFolder}
-          onReconnect={(folderId) => void reconnectFolder(folderId)}
-          disabled={busy}
-        />
+          <FolderChips
+            folders={activeFolders}
+            onRemove={removeFolder}
+            onReconnect={(folderId) => void reconnectFolder(folderId)}
+            disabled={busy}
+          />
+        </div>
 
         <GalleryFilterBar
           galleryView={galleryView}
@@ -155,7 +218,7 @@ function AppContent() {
         />
 
         {notice && (
-          <div className="pointer-events-none fixed inset-x-0 top-14 z-[45] px-4">
+          <div className="pointer-events-none fixed inset-x-0 top-28 z-[45] px-4">
             <div className="pointer-events-auto mx-auto flex max-w-7xl items-center justify-between rounded-lg border border-amber-900/50 bg-amber-950/95 px-4 py-2 text-sm text-amber-200 shadow-lg backdrop-blur-sm">
               <span>{notice}</span>
               <button
@@ -174,7 +237,10 @@ function AppContent() {
             <span>{error ?? favoritesError}</span>
             <button
               type="button"
-              onClick={clearError}
+              onClick={() => {
+                clearError()
+                clearFavoritesError()
+              }}
               className="ml-4 text-red-400 hover:text-red-200"
             >
               Dismiss
@@ -187,7 +253,11 @@ function AppContent() {
             Restoring folders…
           </div>
         ) : displayItems.length > 0 ? (
-          <MasonryGrid slots={displayItems} onSlotFailed={reportSlotFailed} />
+          <MasonryGrid
+            slots={displayItems}
+            onSlotFailed={reportSlotFailed}
+            onNearEnd={() => void loadMoreGallery()}
+          />
         ) : isScanning ? (
           <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">
             Opening folder…
@@ -200,12 +270,28 @@ function AppContent() {
             </p>
           </div>
         ) : mediaPool.length === 0 ? (
-          <EmptyState onOpenHistory={() => setView('history')} />
+          <EmptyState
+            onOpenHistory={() => setView('history')}
+            onBrowse={() => {
+              setExplorerPreset(undefined)
+              setExplorerOpen(true)
+            }}
+          />
         ) : (
           <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">
             No files in this folder.
           </div>
         )}
+
+        <FileTreeExplorer
+          open={explorerOpen}
+          initialPreset={explorerPreset}
+          onClose={() => setExplorerOpen(false)}
+          onPick={async (handle, name) => {
+            await addHandle(handle, name)
+          }}
+        />
+        <MemoryChip />
       </div>
     </GalleryActionsProvider>
   )

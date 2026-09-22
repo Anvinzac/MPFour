@@ -1,8 +1,9 @@
 interface EmptyStateProps {
   onOpenHistory?: () => void
+  onBrowse?: () => void
 }
 
-export function EmptyState({ onOpenHistory }: EmptyStateProps) {
+export function EmptyState({ onOpenHistory, onBrowse }: EmptyStateProps) {
   return (
     <div className="flex min-h-[calc(100vh-57px)] flex-col items-center justify-center px-6 text-center">
       <div className="mb-6 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-8">
@@ -26,18 +27,31 @@ export function EmptyState({ onOpenHistory }: EmptyStateProps) {
       </h2>
       <p className="max-w-sm text-sm text-neutral-400">
         Click <strong className="font-medium text-neutral-300">Add Folder</strong>{' '}
-        to pick a local directory. All sub-folders are scanned recursively.
-        Photos and videos appear together in one mixed gallery.
+        to pick a local directory, or use{' '}
+        <strong className="font-medium text-neutral-300">Browse</strong> to
+        pick a root (like your Home folder) and then drill into specific
+        subfolders. All sub-folders are scanned recursively.
       </p>
-      {onOpenHistory && (
-        <button
-          type="button"
-          onClick={onOpenHistory}
-          className="mt-6 rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-200 hover:bg-neutral-900"
-        >
-          Open History
-        </button>
-      )}
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        {onBrowse && (
+          <button
+            type="button"
+            onClick={onBrowse}
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-200 hover:bg-neutral-900"
+          >
+            Browse files…
+          </button>
+        )}
+        {onOpenHistory && (
+          <button
+            type="button"
+            onClick={onOpenHistory}
+            className="rounded-lg border border-neutral-700 px-4 py-2 text-sm text-neutral-200 hover:bg-neutral-900"
+          >
+            Open History
+          </button>
+        )}
+      </div>
     </div>
   )
 }

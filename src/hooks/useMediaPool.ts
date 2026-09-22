@@ -15,10 +15,12 @@ import {
   setActiveFolderIds,
   touchFolder,
 } from '../lib/folderStore'
+import { aspectRatioProbe } from '../lib/aspectRatioProbe'
+import { SCAFFOLD_BATCH_SIZE } from '../lib/constants'
 import {
   createDiversifiedSlots,
-  graftFilesIntoSlots,
   appendDisplaySlots,
+  pickRandomEqualMix,
   pickSlotReplacement,
 } from '../lib/gallerySlots'
 import {
@@ -37,11 +39,19 @@ import type {
   GallerySlot,
   GalleryView,
   MediaFile,
+  MediaKind,
 } from '../types'
 import type { ScanResult } from '../lib/fileScanner'
 
 function mixDisplaySlots(pool: MediaFile[]): GallerySlot[] {
   return createDiversifiedSlots(pool)
+}
+
+/** Pre-probe aspect ratios so cells are created with correct dimensions. */
+function probeAspectRatios(files: MediaFile[]): Promise<void> {
+  return aspectRatioProbe.probeBatch(
+    files.map((file) => ({ id: file.id, handle: file.handle, kind: file.kind })),
+  )
 }
 
 function resolveVisiblePool(
@@ -72,6 +82,22 @@ function mergeSkipTotals(
   }
 }
 
+function enqueueUndisplayed(
+  buffer: Map<string, MediaFile[]>,
+  folderId: string,
+  files: MediaFile[],
+): void {
+  if (files.length === 0) return
+  const list = buffer.get(folderId) ?? []
+  const seen = new Set(list.map((file) => file.id))
+  for (const file of files) {
+    if (seen.has(file.id)) continue
+    seen.add(file.id)
+    list.push(file)
+  }
+  buffer.set(folderId, list)
+}
+
 export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const [activeFolders, setActiveFolders] = useState<ActiveFolder[]>([])
   const [mediaPool, setMediaPool] = useState<MediaFile[]>([])
@@ -87,10 +113,12 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const [notice, setNotice] = useState<string | null>(null)
   const slotAttemptsRef = useRef(new Map<string, Set<string>>())
   const scanAbortRef = useRef(new Map<string, AbortController>())
-  const remixDebounceRef = useRef<ReturnType<typeof setTimeout>>(0)
-  const legacyRemixDebounceRef = useRef<ReturnType<typeof setTimeout>>(0)
-  const pendingGraftFilesRef = useRef<MediaFile[]>([])
-  const pendingLegacyGraftRef = useRef<MediaFile[]>([])
+  const scaffoldGalleryBusyRef = useRef(false)
+  const scaffoldLegacyBusyRef = useRef(false)
+  const undisplayedByFolderRef = useRef(new Map<string, MediaFile[]>())
+  const undisplayedLegacyByFolderRef = useRef(new Map<string, MediaFile[]>())
+  const displayedIdsRef = useRef(new Set<string>())
+  const displayedLegacyIdsRef = useRef(new Set<string>())
   const poolRef = useRef<MediaFile[]>([])
   const slotsRef = useRef<GallerySlot[]>([])
   const legacyPoolRef = useRef<MediaFile[]>([])
@@ -120,6 +148,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       const slots = mixDisplaySlots(visible)
       slotsRef.current = slots
       setDisplaySlots(slots)
+      displayedIdsRef.current = new Set(slots.map((slot) => slot.media.id))
+      undisplayedByFolderRef.current.clear()
     },
     [],
   )
@@ -128,78 +158,97 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     const slots = mixDisplaySlots(pool)
     legacySlotsRef.current = slots
     setLegacyDisplaySlots(slots)
+    displayedLegacyIdsRef.current = new Set(slots.map((slot) => slot.media.id))
+    undisplayedLegacyByFolderRef.current.clear()
   }, [])
 
-  const appendToGallery = useCallback((files: MediaFile[]) => {
-    if (files.length === 0) return
-    setDisplaySlots((prev) => {
-      const next = appendDisplaySlots(prev, files)
-      slotsRef.current = next
-      return next
-    })
+  const loadMoreGallery = useCallback(async () => {
+    if (scaffoldGalleryBusyRef.current) return
+    if (galleryViewRef.current.mode !== 'mixed') return
+
+    const batch = pickRandomEqualMix(
+      undisplayedByFolderRef.current,
+      displayedIdsRef.current,
+      SCAFFOLD_BATCH_SIZE,
+    )
+    if (batch.length === 0) return
+
+    scaffoldGalleryBusyRef.current = true
+    try {
+      await probeAspectRatios(batch)
+      for (const file of batch) {
+        displayedIdsRef.current.add(file.id)
+      }
+      setDisplaySlots((prev) => {
+        const next =
+          prev.length === 0
+            ? batch.map((media) => ({
+                key: media.id,
+                media,
+                useFixedHeight: false,
+              }))
+            : appendDisplaySlots(prev, batch)
+        slotsRef.current = next
+        return next
+      })
+    } finally {
+      scaffoldGalleryBusyRef.current = false
+    }
   }, [])
 
-  const appendToLegacyGallery = useCallback((files: MediaFile[]) => {
-    if (files.length === 0) return
-    setLegacyDisplaySlots((prev) => {
-      const next = appendDisplaySlots(prev, files)
-      legacySlotsRef.current = next
-      return next
-    })
+  const loadMoreLegacy = useCallback(async () => {
+    if (scaffoldLegacyBusyRef.current) return
+
+    const batch = pickRandomEqualMix(
+      undisplayedLegacyByFolderRef.current,
+      displayedLegacyIdsRef.current,
+      SCAFFOLD_BATCH_SIZE,
+    )
+    if (batch.length === 0) return
+
+    scaffoldLegacyBusyRef.current = true
+    try {
+      await probeAspectRatios(batch)
+      for (const file of batch) {
+        displayedLegacyIdsRef.current.add(file.id)
+      }
+      setLegacyDisplaySlots((prev) => {
+        const next =
+          prev.length === 0
+            ? batch.map((media) => ({
+                key: media.id,
+                media,
+                useFixedHeight: false,
+              }))
+            : appendDisplaySlots(prev, batch)
+        legacySlotsRef.current = next
+        return next
+      })
+    } finally {
+      scaffoldLegacyBusyRef.current = false
+    }
   }, [])
 
-  const graftIntoGallery = useCallback((files: MediaFile[]) => {
-    if (files.length === 0) return
-    setDisplaySlots((prev) => {
-      const next =
-        prev.length === 0
-          ? createDiversifiedSlots(files)
-          : graftFilesIntoSlots(prev, files)
-      slotsRef.current = next
-      return next
-    })
-  }, [])
-
-  const graftIntoLegacyGallery = useCallback((files: MediaFile[]) => {
-    if (files.length === 0) return
-    setLegacyDisplaySlots((prev) => {
-      const next =
-        prev.length === 0
-          ? createDiversifiedSlots(files)
-          : graftFilesIntoSlots(prev, files)
-      legacySlotsRef.current = next
-      return next
-    })
-  }, [])
-
-  const scheduleAppendToGallery = useCallback(
-    (files: MediaFile[]) => {
-      if (galleryViewRef.current.mode !== 'mixed' || files.length === 0) return
-      pendingGraftFilesRef.current.push(...files)
-      window.clearTimeout(remixDebounceRef.current)
-      remixDebounceRef.current = window.setTimeout(() => {
-        remixDebounceRef.current = 0
-        const batch = pendingGraftFilesRef.current
-        pendingGraftFilesRef.current = []
-        appendToGallery(batch)
-      }, 350)
+  const enqueueGalleryDiscovery = useCallback(
+    (folderId: string, files: MediaFile[]) => {
+      if (files.length === 0) return
+      enqueueUndisplayed(undisplayedByFolderRef.current, folderId, files)
+      if (slotsRef.current.length === 0) {
+        void loadMoreGallery()
+      }
     },
-    [appendToGallery],
+    [loadMoreGallery],
   )
 
-  const scheduleAppendToLegacyGallery = useCallback(
-    (files: MediaFile[]) => {
+  const enqueueLegacyDiscovery = useCallback(
+    (folderId: string, files: MediaFile[]) => {
       if (files.length === 0) return
-      pendingLegacyGraftRef.current.push(...files)
-      window.clearTimeout(legacyRemixDebounceRef.current)
-      legacyRemixDebounceRef.current = window.setTimeout(() => {
-        legacyRemixDebounceRef.current = 0
-        const batch = pendingLegacyGraftRef.current
-        pendingLegacyGraftRef.current = []
-        appendToLegacyGallery(batch)
-      }, 350)
+      enqueueUndisplayed(undisplayedLegacyByFolderRef.current, folderId, files)
+      if (legacySlotsRef.current.length === 0) {
+        void loadMoreLegacy()
+      }
     },
-    [appendToLegacyGallery],
+    [loadMoreLegacy],
   )
 
   const reloadGrid = useCallback(
@@ -367,7 +416,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
                 galleryViewRef.current.mode === 'mixed' &&
                 batch.files.length > 0
               ) {
-                scheduleAppendToGallery(batch.files)
+                enqueueGalleryDiscovery(folderId, batch.files)
               }
             },
             onLegacyBackground: async (batch) => {
@@ -381,7 +430,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
               legacyPoolRef.current = nextLegacy
               setLegacyPool(nextLegacy)
               if (batch.files.length > 0) {
-                scheduleAppendToLegacyGallery(batch.files)
+                enqueueLegacyDiscovery(folderId, batch.files)
               }
             },
           },
@@ -422,8 +471,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       updateFolderCounts,
       mergePoolForFolder,
       mergeLegacyPoolForFolder,
-      scheduleAppendToGallery,
-      scheduleAppendToLegacyGallery,
+      enqueueGalleryDiscovery,
+      enqueueLegacyDiscovery,
     ],
   )
 
@@ -431,6 +480,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     async (
       handle: FileSystemDirectoryHandle,
       existingId?: string,
+      displayName?: string,
     ): Promise<ActiveFolder | null> => {
       const folderId = existingId ?? crypto.randomUUID()
       const now = Date.now()
@@ -450,7 +500,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
 
       const folder: ActiveFolder = {
         id: folderId,
-        name: handle.name,
+        name: displayName ?? handle.name,
         handle,
         fileCount: 0,
         imageCount: 0,
@@ -473,8 +523,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         const nextPool = mergePoolForFolder(folderId, quickFiles)
         poolRef.current = nextPool
         setMediaPool(nextPool)
-        setGalleryView({ mode: 'mixed' })
-        graftIntoGallery(batch.files)
+        enqueueGalleryDiscovery(folderId, batch.files)
         updateFolderCounts(folderId, quickFiles)
         setIsScanning(false)
         setIsRestoring(false)
@@ -491,7 +540,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         )
         legacyPoolRef.current = nextLegacy
         setLegacyPool(nextLegacy)
-        graftIntoLegacyGallery(batch.files)
+        enqueueLegacyDiscovery(folderId, batch.files)
         if (batch.files.length > 0) setIsLegacyDiscovering(true)
       }
 
@@ -517,7 +566,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
               galleryViewRef.current.mode === 'mixed' &&
               batch.files.length > 0
             ) {
-              scheduleAppendToGallery(batch.files)
+              enqueueGalleryDiscovery(folderId, batch.files)
             }
           },
           onLegacyBackground: async (batch) => {
@@ -531,7 +580,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
             legacyPoolRef.current = nextLegacy
             setLegacyPool(nextLegacy)
             if (batch.files.length > 0) {
-              scheduleAppendToLegacyGallery(batch.files)
+              enqueueLegacyDiscovery(folderId, batch.files)
             }
           },
         })
@@ -585,10 +634,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       updateFolderCounts,
       mergePoolForFolder,
       mergeLegacyPoolForFolder,
-      graftIntoGallery,
-      graftIntoLegacyGallery,
-      scheduleAppendToGallery,
-      scheduleAppendToLegacyGallery,
+      enqueueGalleryDiscovery,
+      enqueueLegacyDiscovery,
     ],
   )
 
@@ -675,17 +722,39 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         loadedFolders.sort((a, b) => b.addedAt - a.addedAt)
         setActiveFolders(loadedFolders)
         poolRef.current = allFiles
-        slotsRef.current = createDiversifiedSlots(allFiles)
         setMediaPool(allFiles)
-        setDisplaySlots(slotsRef.current)
         legacyPoolRef.current = allLegacyFiles
-        legacySlotsRef.current = createDiversifiedSlots(allLegacyFiles)
         setLegacyPool(allLegacyFiles)
-        setLegacyDisplaySlots(legacySlotsRef.current)
         setGalleryView({ mode: 'mixed' })
         persistActiveFolders(loadedFolders)
         quickShown = true
         if (allLegacyFiles.length > 0) setIsLegacyDiscovering(true)
+
+        undisplayedByFolderRef.current.clear()
+        undisplayedLegacyByFolderRef.current.clear()
+        displayedIdsRef.current.clear()
+        displayedLegacyIdsRef.current.clear()
+        slotsRef.current = []
+        legacySlotsRef.current = []
+        setDisplaySlots([])
+        setLegacyDisplaySlots([])
+
+        for (const result of quickResults) {
+          if (!result?.quick) continue
+          enqueueUndisplayed(
+            undisplayedByFolderRef.current,
+            result.stored.id,
+            result.quick.gallery.files,
+          )
+          enqueueUndisplayed(
+            undisplayedLegacyByFolderRef.current,
+            result.stored.id,
+            result.quick.legacy.files,
+          )
+        }
+
+        await loadMoreGallery()
+        await loadMoreLegacy()
       } else {
         setActiveFolderIds([])
       }
@@ -726,7 +795,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       }
       scanAbortRef.current.clear()
     }
-  }, [persistActiveFolders, runBackgroundDualScan])
+  }, [persistActiveFolders, runBackgroundDualScan, loadMoreGallery, loadMoreLegacy])
 
   useEffect(() => {
     persistActiveFolders(activeFolders)
@@ -746,6 +815,23 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       setIsScanning(false)
     }
   }, [ingestFolder])
+
+  const addHandle = useCallback(
+    async (handle: FileSystemDirectoryHandle, displayName?: string) => {
+      setError(null)
+      setNotice(null)
+      setIsScanning(true)
+      try {
+        await ingestFolder(handle, undefined, displayName)
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setError(err instanceof Error ? err.message : 'Failed to add folder')
+      } finally {
+        setIsScanning(false)
+      }
+    },
+    [ingestFolder],
+  )
 
   const reconnectFolder = useCallback(
     async (folderId: string) => {
@@ -809,6 +895,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const removeFolder = useCallback(
     (folderId: string) => {
       cancelFolderScan(folderId)
+      undisplayedByFolderRef.current.delete(folderId)
+      undisplayedLegacyByFolderRef.current.delete(folderId)
       setActiveFolders((prev) => prev.filter((f) => f.id !== folderId))
       setGalleryView((prev) =>
         prev.mode === 'subfolder' && prev.filter.folderId === folderId
@@ -831,6 +919,36 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     [cancelFolderScan, remixGallery, remixLegacyGallery],
   )
 
+  const clearAllFolders = useCallback(() => {
+    // Cancel all ongoing scans
+    for (const controller of scanAbortRef.current.values()) {
+      controller.abort()
+    }
+    scanAbortRef.current.clear()
+    
+    // Clear all state
+    setActiveFolders([])
+    setMediaPool([])
+    setLegacyPool([])
+    setDisplaySlots([])
+    setLegacyDisplaySlots([])
+    setGalleryView({ mode: 'mixed' })
+    
+    // Clear refs
+    undisplayedByFolderRef.current.clear()
+    undisplayedLegacyByFolderRef.current.clear()
+    displayedIdsRef.current.clear()
+    displayedLegacyIdsRef.current.clear()
+    poolRef.current = []
+    slotsRef.current = []
+    legacyPoolRef.current = []
+    legacySlotsRef.current = []
+    
+    setIsScanning(false)
+    setIsDiscovering(false)
+    setIsLegacyDiscovering(false)
+  }, [])
+
   const refresh = useCallback(() => {
     reloadGrid(mediaPool)
   }, [mediaPool, reloadGrid])
@@ -840,7 +958,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   }, [legacyPool, remixLegacyGallery])
 
   const reportSlotFailed = useCallback(
-    (slotKey: string) => {
+    (slotKey: string, kind: MediaKind) => {
       setDisplaySlots((prev) => {
         const idx = prev.findIndex((slot) => slot.key === slotKey)
         if (idx === -1) return prev
@@ -856,7 +974,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           galleryViewRef.current,
           favoriteIdsRef.current,
         )
-        const replacement = pickSlotReplacement(visiblePool, onScreenIds, tried)
+        const replacement = pickSlotReplacement(visiblePool, onScreenIds, tried, kind)
 
         if (!replacement) {
           return prev
@@ -879,7 +997,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   )
 
   const reportLegacySlotFailed = useCallback(
-    (slotKey: string) => {
+    (slotKey: string, kind: MediaKind) => {
       setLegacyDisplaySlots((prev) => {
         const idx = prev.findIndex((slot) => slot.key === slotKey)
         if (idx === -1) return prev
@@ -894,6 +1012,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           legacyPoolRef.current,
           onScreenIds,
           tried,
+          kind,
         )
 
         if (!replacement) {
@@ -933,9 +1052,13 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     error,
     notice,
     addFolder,
+    addHandle,
     removeFolder,
+    clearAllFolders,
     loadFolderFromHistory,
     reconnectFolder,
+    loadMoreGallery,
+    loadMoreLegacy,
     refresh,
     refreshLegacy,
     reportSlotFailed,

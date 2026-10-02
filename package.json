@@ -8,6 +8,7 @@
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
     "build": "tsc -b && vite build",
+    "build:portable": "tsc -b && vite build --mode portable",
     "lint": "oxlint",
     "preview": "vite preview"
   },
@@ -34,6 +35,7 @@
     "tailwindcss": "^4.3.2",
     "tsx": "^4.19.3",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1"
+    "vite": "^8.1.1",
+    "vite-plugin-singlefile": "^2.3.3"
   }
 }

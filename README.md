@@ -1,5 +1,22 @@
 # React + TypeScript + Vite
 
+## Portable build (Windows 7 / any PC without Node)
+
+The easiest option is the hosted copy, rebuilt automatically on every push to
+`main`: https://anvinzac.github.io/MPFour/ — open it in Chrome or Edge 109+.
+Folders are read locally in the browser; nothing is uploaded.
+
+To build the file yourself, on a machine with Node 20+, run:
+
+```bash
+npm run build:portable
+```
+
+This writes a single self-contained `dist-portable/index.html`. Copy it to the
+target PC and open it in **Chrome 109+** or **Edge 109+** (109 is the last
+version for Windows 7). No server is needed; favorites are stored in the
+browser instead of SQLite.
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 Currently, two official plugins are available:

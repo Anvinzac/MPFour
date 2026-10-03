@@ -16,7 +16,8 @@ import {
   touchFolder,
 } from '../lib/folderStore'
 import { aspectRatioProbe } from '../lib/aspectRatioProbe'
-import { SCAFFOLD_BATCH_SIZE } from '../lib/constants'
+import { PREPARE_MAX_ATTEMPTS, SCAFFOLD_BATCH_SIZE } from '../lib/constants'
+import { filterPlayableMedia } from '../lib/mediaValidator'
 import {
   createDiversifiedSlots,
   appendDisplaySlots,
@@ -28,6 +29,11 @@ import {
   filterFilesInSubfolder,
 } from '../lib/mediaFilter'
 import { getMediaStats } from '../lib/mediaStats'
+import {
+  directoryKey,
+  OverviewQuota,
+  sampleOverview,
+} from '../lib/overviewSampler'
 import { formatSubfolderLabel } from '../lib/pathUtils'
 import {
   backgroundDualScanFolder,
@@ -72,6 +78,28 @@ function resolveVisiblePool(
   return pool
 }
 
+/**
+ * Replacement for a failed overview cell that keeps the 1–2-per-directory
+ * rule: same directory first, then a directory not yet on screen.
+ */
+function pickOverviewReplacement(
+  pool: MediaFile[],
+  slots: GallerySlot[],
+  failed: MediaFile,
+  tried: Set<string>,
+  kind: MediaKind,
+): MediaFile | null {
+  const onScreenIds = new Set(slots.map((slot) => slot.media.id))
+  const failedDir = directoryKey(failed)
+  const sameDir = pool.filter((file) => directoryKey(file) === failedDir)
+  const fromSameDir = pickSlotReplacement(sameDir, onScreenIds, tried, kind)
+  if (fromSameDir) return fromSameDir
+
+  const shownDirs = new Set(slots.map((slot) => directoryKey(slot.media)))
+  const unseenDirs = pool.filter((file) => !shownDirs.has(directoryKey(file)))
+  return pickSlotReplacement(unseenDirs, onScreenIds, tried, kind)
+}
+
 function mergeSkipTotals(
   current: { overLimit: number; unplayable: number },
   batch: Pick<ScanResult, 'skippedOverLimit' | 'skippedUnplayable'>,
@@ -79,6 +107,19 @@ function mergeSkipTotals(
   return {
     overLimit: current.overLimit + batch.skippedOverLimit,
     unplayable: current.unplayable + batch.skippedUnplayable,
+  }
+}
+
+function removeFromBuffer(
+  buffer: Map<string, MediaFile[]>,
+  files: MediaFile[],
+): void {
+  const ids = new Set(files.map((file) => file.id))
+  for (const [folderId, list] of buffer) {
+    buffer.set(
+      folderId,
+      list.filter((file) => !ids.has(file.id)),
+    )
   }
 }
 
@@ -126,6 +167,23 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const galleryViewRef = useRef<GalleryView>({ mode: 'mixed' })
   const favoriteIdsRef = useRef(favoriteIds)
   const activeFoldersRef = useRef<ActiveFolder[]>([])
+  // Mixed view is an overview: each directory shows at most a random 1–2
+  // files. The pool keeps everything so the subfolder view can show it all.
+  const overviewQuotaRef = useRef(new OverviewQuota())
+  const legacyOverviewQuotaRef = useRef(new OverviewQuota())
+  const preparedGalleryRef = useRef<MediaFile[]>([])
+  const preparingGalleryRef = useRef<Promise<void> | null>(null)
+  // Bumped whenever the grid is rebuilt so in-flight preparation is discarded.
+  const galleryGenerationRef = useRef(0)
+  const unplayableIdsRef = useRef(new Set<string>())
+  const wantsMoreGalleryRef = useRef(false)
+  const wantsMoreLegacyRef = useRef(false)
+
+  const resetGalleryPipeline = useCallback(() => {
+    galleryGenerationRef.current++
+    preparedGalleryRef.current = []
+    wantsMoreGalleryRef.current = false
+  }, [])
 
   poolRef.current = mediaPool
   slotsRef.current = displaySlots
@@ -144,38 +202,118 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const remixGallery = useCallback(
     (pool: MediaFile[], view: GalleryView = galleryViewRef.current) => {
       slotAttemptsRef.current.clear()
+      resetGalleryPipeline()
       const visible = resolveVisiblePool(pool, view, favoriteIdsRef.current)
-      const slots = mixDisplaySlots(visible)
+      const slots = mixDisplaySlots(
+        view.mode === 'mixed'
+          ? sampleOverview(visible, overviewQuotaRef.current)
+          : visible,
+      )
       slotsRef.current = slots
       setDisplaySlots(slots)
       displayedIdsRef.current = new Set(slots.map((slot) => slot.media.id))
       undisplayedByFolderRef.current.clear()
     },
-    [],
+    [resetGalleryPipeline],
   )
 
   const remixLegacyGallery = useCallback((pool: MediaFile[]) => {
-    const slots = mixDisplaySlots(pool)
+    const slots = mixDisplaySlots(
+      sampleOverview(pool, legacyOverviewQuotaRef.current),
+    )
     legacySlotsRef.current = slots
     setLegacyDisplaySlots(slots)
     displayedLegacyIdsRef.current = new Set(slots.map((slot) => slot.media.id))
     undisplayedLegacyByFolderRef.current.clear()
   }, [])
 
+  /**
+   * Swaps an unplayable overview pick for another file from the same
+   * directory, so a folder with one bad file still gets represented.
+   */
+  const refillOverviewSlot = useCallback((failed: MediaFile) => {
+    const quota = overviewQuotaRef.current
+    quota.release(failed)
+    const dir = directoryKey(failed)
+    const candidate = poolRef.current.find(
+      (file) =>
+        directoryKey(file) === dir &&
+        !unplayableIdsRef.current.has(file.id) &&
+        !displayedIdsRef.current.has(file.id) &&
+        !quota.isAdmitted(file),
+    )
+    if (candidate && quota.admit(candidate)) {
+      enqueueUndisplayed(undisplayedByFolderRef.current, candidate.folderId, [
+        candidate,
+      ])
+    }
+  }, [])
+
+  /**
+   * Validates and size-probes the next overview batch off-screen, so it can
+   * be appended instantly when the user nears the bottom.
+   */
+  const prepareGalleryBatch = useCallback((): Promise<void> => {
+    if (preparingGalleryRef.current) return preparingGalleryRef.current
+    if (preparedGalleryRef.current.length >= SCAFFOLD_BATCH_SIZE) {
+      return Promise.resolve()
+    }
+
+    const generation = galleryGenerationRef.current
+    const work = (async () => {
+      for (let attempt = 0; attempt < PREPARE_MAX_ATTEMPTS; attempt++) {
+        const reserved = new Set(displayedIdsRef.current)
+        for (const file of preparedGalleryRef.current) reserved.add(file.id)
+        const candidates = pickRandomEqualMix(
+          undisplayedByFolderRef.current,
+          reserved,
+          SCAFFOLD_BATCH_SIZE - preparedGalleryRef.current.length,
+        )
+        if (candidates.length === 0) return
+
+        removeFromBuffer(undisplayedByFolderRef.current, candidates)
+        const { files: playable } = await filterPlayableMedia(candidates)
+        if (generation !== galleryGenerationRef.current) return
+
+        const playableIds = new Set(playable.map((file) => file.id))
+        for (const file of candidates) {
+          if (playableIds.has(file.id)) continue
+          unplayableIdsRef.current.add(file.id)
+          refillOverviewSlot(file)
+        }
+
+        await probeAspectRatios(playable)
+        if (generation !== galleryGenerationRef.current) return
+        preparedGalleryRef.current.push(...playable)
+        if (preparedGalleryRef.current.length >= SCAFFOLD_BATCH_SIZE) return
+      }
+    })().finally(() => {
+      preparingGalleryRef.current = null
+    })
+
+    preparingGalleryRef.current = work
+    return work
+  }, [refillOverviewSlot])
+
   const loadMoreGallery = useCallback(async () => {
     if (scaffoldGalleryBusyRef.current) return
     if (galleryViewRef.current.mode !== 'mixed') return
 
-    const batch = pickRandomEqualMix(
-      undisplayedByFolderRef.current,
-      displayedIdsRef.current,
-      SCAFFOLD_BATCH_SIZE,
-    )
-    if (batch.length === 0) return
-
     scaffoldGalleryBusyRef.current = true
     try {
-      await probeAspectRatios(batch)
+      if (preparedGalleryRef.current.length === 0) {
+        await prepareGalleryBatch()
+      }
+      const batch = preparedGalleryRef.current
+        .splice(0, SCAFFOLD_BATCH_SIZE)
+        .filter((file) => !displayedIdsRef.current.has(file.id))
+      if (batch.length === 0) {
+        // Nothing ready yet: load as soon as the scan discovers more.
+        wantsMoreGalleryRef.current = true
+        return
+      }
+      wantsMoreGalleryRef.current = false
+
       for (const file of batch) {
         displayedIdsRef.current.add(file.id)
       }
@@ -194,7 +332,8 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     } finally {
       scaffoldGalleryBusyRef.current = false
     }
-  }, [])
+    void prepareGalleryBatch()
+  }, [prepareGalleryBatch])
 
   const loadMoreLegacy = useCallback(async () => {
     if (scaffoldLegacyBusyRef.current) return
@@ -204,7 +343,11 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       displayedLegacyIdsRef.current,
       SCAFFOLD_BATCH_SIZE,
     )
-    if (batch.length === 0) return
+    if (batch.length === 0) {
+      wantsMoreLegacyRef.current = true
+      return
+    }
+    wantsMoreLegacyRef.current = false
 
     scaffoldLegacyBusyRef.current = true
     try {
@@ -231,20 +374,24 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
 
   const enqueueGalleryDiscovery = useCallback(
     (folderId: string, files: MediaFile[]) => {
-      if (files.length === 0) return
-      enqueueUndisplayed(undisplayedByFolderRef.current, folderId, files)
-      if (slotsRef.current.length === 0) {
+      const overview = overviewQuotaRef.current.filter(files)
+      if (overview.length === 0) return
+      enqueueUndisplayed(undisplayedByFolderRef.current, folderId, overview)
+      if (slotsRef.current.length === 0 || wantsMoreGalleryRef.current) {
         void loadMoreGallery()
+      } else {
+        void prepareGalleryBatch()
       }
     },
-    [loadMoreGallery],
+    [loadMoreGallery, prepareGalleryBatch],
   )
 
   const enqueueLegacyDiscovery = useCallback(
     (folderId: string, files: MediaFile[]) => {
-      if (files.length === 0) return
-      enqueueUndisplayed(undisplayedLegacyByFolderRef.current, folderId, files)
-      if (legacySlotsRef.current.length === 0) {
+      const overview = legacyOverviewQuotaRef.current.filter(files)
+      if (overview.length === 0) return
+      enqueueUndisplayed(undisplayedLegacyByFolderRef.current, folderId, overview)
+      if (legacySlotsRef.current.length === 0 || wantsMoreLegacyRef.current) {
         void loadMoreLegacy()
       }
     },
@@ -734,6 +881,9 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
         undisplayedLegacyByFolderRef.current.clear()
         displayedIdsRef.current.clear()
         displayedLegacyIdsRef.current.clear()
+        overviewQuotaRef.current.reset()
+        legacyOverviewQuotaRef.current.reset()
+        resetGalleryPipeline()
         slotsRef.current = []
         legacySlotsRef.current = []
         setDisplaySlots([])
@@ -744,12 +894,12 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           enqueueUndisplayed(
             undisplayedByFolderRef.current,
             result.stored.id,
-            result.quick.gallery.files,
+            overviewQuotaRef.current.filter(result.quick.gallery.files),
           )
           enqueueUndisplayed(
             undisplayedLegacyByFolderRef.current,
             result.stored.id,
-            result.quick.legacy.files,
+            legacyOverviewQuotaRef.current.filter(result.quick.legacy.files),
           )
         }
 
@@ -795,7 +945,13 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       }
       scanAbortRef.current.clear()
     }
-  }, [persistActiveFolders, runBackgroundDualScan, loadMoreGallery, loadMoreLegacy])
+  }, [
+    persistActiveFolders,
+    runBackgroundDualScan,
+    loadMoreGallery,
+    loadMoreLegacy,
+    resetGalleryPipeline,
+  ])
 
   useEffect(() => {
     persistActiveFolders(activeFolders)
@@ -939,6 +1095,10 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     undisplayedLegacyByFolderRef.current.clear()
     displayedIdsRef.current.clear()
     displayedLegacyIdsRef.current.clear()
+    overviewQuotaRef.current.reset()
+    legacyOverviewQuotaRef.current.reset()
+    resetGalleryPipeline()
+    wantsMoreLegacyRef.current = false
     poolRef.current = []
     slotsRef.current = []
     legacyPoolRef.current = []
@@ -947,7 +1107,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
     setIsScanning(false)
     setIsDiscovering(false)
     setIsLegacyDiscovering(false)
-  }, [])
+  }, [resetGalleryPipeline])
 
   const refresh = useCallback(() => {
     reloadGrid(mediaPool)
@@ -974,7 +1134,10 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           galleryViewRef.current,
           favoriteIdsRef.current,
         )
-        const replacement = pickSlotReplacement(visiblePool, onScreenIds, tried, kind)
+        const replacement =
+          galleryViewRef.current.mode === 'mixed'
+            ? pickOverviewReplacement(visiblePool, prev, current.media, tried, kind)
+            : pickSlotReplacement(visiblePool, onScreenIds, tried, kind)
 
         if (!replacement) {
           return prev
@@ -1007,10 +1170,10 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
           slotAttemptsRef.current.get(slotKey) ?? new Set<string>()
         tried.add(current.media.id)
 
-        const onScreenIds = new Set(prev.map((slot) => slot.media.id))
-        const replacement = pickSlotReplacement(
+        const replacement = pickOverviewReplacement(
           legacyPoolRef.current,
-          onScreenIds,
+          prev,
+          current.media,
           tried,
           kind,
         )

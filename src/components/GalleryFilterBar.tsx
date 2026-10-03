@@ -22,13 +22,14 @@ export function GalleryFilterBar({
       <button
         type="button"
         onClick={onShowMixed}
+        title="1–2 random files from every folder, in random order. Click a file's path to see everything in that folder."
         className={`rounded-full px-3 py-1 text-xs font-medium transition ${
           isMixed
             ? 'bg-white text-neutral-900'
             : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
         }`}
       >
-        All mixed
+        Overview · 1–2 per folder
       </button>
       <button
         type="button"

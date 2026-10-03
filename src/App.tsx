@@ -14,7 +14,10 @@ import { FullScreenProvider } from './hooks/useFullScreen'
 import { FavoritesProvider, useFavorites } from './hooks/useFavorites'
 import { GalleryActionsProvider } from './hooks/useGalleryActions'
 import { useMediaPool } from './hooks/useMediaPool'
+import { isDirectoryPickerSupported } from './lib/fileScanner'
 import type { AppView, PickerStartIn } from './types'
+
+const directoryPickerSupported = isDirectoryPickerSupported()
 
 function AppContent() {
   const [view, setView] = useState<AppView>('grid')
@@ -248,6 +251,18 @@ function AppContent() {
           </div>
         )}
 
+        {!directoryPickerSupported && (
+          <div className="mx-4 mt-3 flex items-start rounded-lg border border-red-900/50 bg-red-950/50 px-4 py-2 text-sm text-red-300">
+            <span>
+              This browser can&apos;t open folders — the File System Access
+              API is unavailable
+              {!window.isSecureContext
+                ? ' because the page is not a secure context (use https:// or http://localhost).'
+                : '. Safari and Firefox don\'t support it; open MPFour in a Chromium-based browser such as Chrome or Edge.'}
+            </span>
+          </div>
+        )}
+
         {isRestoring ? (
           <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">
             Restoring folders…
@@ -257,6 +272,11 @@ function AppContent() {
             slots={displayItems}
             onSlotFailed={reportSlotFailed}
             onNearEnd={() => void loadMoreGallery()}
+            footerStatus={
+              isDiscovering && galleryView.mode === 'mixed'
+                ? 'Scanning more folders…'
+                : null
+            }
           />
         ) : isScanning ? (
           <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">

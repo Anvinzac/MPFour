@@ -13,6 +13,7 @@ dist-portable
 dist-ssr
 *.local
 server/data/
+.commandcode/
 
 # Editor directories and files
 .vscode/*

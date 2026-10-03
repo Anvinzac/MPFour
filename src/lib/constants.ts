@@ -3,22 +3,33 @@ export const MAX_ACTIVE_CANVAS_PLAYERS = 5
 export const PREVIEW_DURATION_SEC = 5
 /** Files above this limit are excluded during scan to avoid memory crashes. */
 export const MAX_FILE_BYTES = 100 * 1024 * 1024
+/** Files below this are skipped during scan — mostly thumbnails, icons and cache images. */
+export const MIN_FILE_BYTES = 30 * 1024
 /** Above this size, grid uses a byte-range preview blob instead of the full file. */
 export const LARGE_VIDEO_BYTES = 20 * 1024 * 1024
 /** Files added to the visible grid per scaffold step (mixed across folders). */
 export const SCAFFOLD_BATCH_SIZE = 12
 /** Start loading the next batch when the viewport is this many items from the end. */
 export const SCAFFOLD_LOAD_AHEAD = 4
+/** Validation rounds per prepared batch before giving up on a buffer full of unplayable files. */
+export const PREPARE_MAX_ATTEMPTS = 3
+/** How far below the viewport (px) the bottom sentinel starts requesting more. */
+export const NEAR_END_MARGIN_PX = 1200
 /** Max files collected per folder in the first quick pass (feeds the buffer). */
 export const QUICK_SCAN_MAX_FILES = 20
-/** Shallow sample per immediate sub-folder for variety in the quick pass. */
-export const QUICK_SCAN_FILES_PER_SUBDIR = 3
-/** Max immediate sub-folders sampled during the quick pass (full tree scanned later). */
-export const QUICK_SCAN_MAX_SUBDIRS = 4
-/** Nested sub-folders peeked per sampled branch during quick pass. */
-export const QUICK_SCAN_NESTED_SUBDIRS = 3
-/** Raw files validated per background batch while the user browses. */
+/** Directories visited (in random order) during the quick pass before handing off to the full scan. */
+export const QUICK_SCAN_MAX_DIRS = 40
+/**
+ * Overview rule for the mixed gallery: every directory contributes a random
+ * 1–2 files so a large collection is surveyed broadly. Opening a directory
+ * from a cell's path label shows all of its files.
+ */
+export const OVERVIEW_MIN_PER_DIR = 1
+export const OVERVIEW_MAX_PER_DIR = 2
+/** Raw files emitted per background batch while the user browses. */
 export const BACKGROUND_SCAN_BATCH_SIZE = 20
+/** Emit a partial background batch after this long, so slow folders still trickle in (ms). */
+export const BACKGROUND_SCAN_FLUSH_MS = 400
 /** Byte-range slices to try for large-file previews (moov-at-start MP4/MOV). */
 export const PREVIEW_SLICE_ATTEMPTS = [
   2 * 1024 * 1024,

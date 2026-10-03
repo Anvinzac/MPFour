@@ -22,7 +22,7 @@ export function CellPathLabel({ file, visible = true }: CellPathLabelProps) {
           filterToSubfolder(file)
         }}
         className="pointer-events-auto truncate text-left text-xs text-neutral-200 underline decoration-neutral-500/60 underline-offset-2 transition hover:text-white hover:decoration-neutral-300"
-        title={`Show only files in ${file.relativePath.includes('/') ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/')) : 'this folder'}`}
+        title={`Deep dive: show every file in ${file.relativePath.includes('/') ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/')) : 'this folder'}`}
       >
         {file.relativePath}
       </button>

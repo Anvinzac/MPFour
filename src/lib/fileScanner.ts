@@ -1,5 +1,5 @@
 import type { MediaFile } from '../types'
-import { MAX_FILE_BYTES } from './constants'
+import { MAX_FILE_BYTES, MIN_FILE_BYTES } from './constants'
 import { getMediaKind, isGalleryMediaFile } from './mediaExtensions'
 import { filterPlayableMedia } from './mediaValidator'
 
@@ -36,9 +36,14 @@ export function isFileWithinLimit(size: number): boolean {
   return size <= MAX_FILE_BYTES
 }
 
+export function isFileLargeEnough(size: number): boolean {
+  return size >= MIN_FILE_BYTES
+}
+
 /**
  * Recursively walks all sub-folders under `dir` and collects media files.
- * Skips any file larger than {@link MAX_FILE_BYTES}.
+ * Skips any file larger than {@link MAX_FILE_BYTES} or smaller than
+ * {@link MIN_FILE_BYTES}.
  */
 export async function scanDirectory(
   dir: FileSystemDirectoryHandle,
@@ -58,6 +63,7 @@ export async function scanDirectory(
         skippedOverLimit++
         continue
       }
+      if (!isFileLargeEnough(file.size)) continue
 
       const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name
       files.push({
@@ -112,9 +118,29 @@ export type PickerStartIn =
   | 'pictures'
   | 'videos'
 
+/**
+ * True when the running browser exposes the File System Access API's
+ * directory picker. Safari and Firefox do not implement
+ * `showDirectoryPicker`, and Chromium only exposes it in a secure context
+ * (https:// or http://localhost — not a raw IP / plain HTTP origin).
+ */
+export function isDirectoryPickerSupported(): boolean {
+  return (
+    window.isSecureContext &&
+    typeof window.showDirectoryPicker === 'function'
+  )
+}
+
 export async function pickDirectory(
   startIn?: PickerStartIn | FileSystemDirectoryHandle,
 ): Promise<FileSystemDirectoryHandle> {
+  if (!isDirectoryPickerSupported()) {
+    throw new Error(
+      window.isSecureContext
+        ? 'This browser does not support folder picking (File System Access API). Open MPFour in a Chromium-based browser such as Chrome or Edge.'
+        : 'Folder picking requires a secure context. Open this page via https:// or http://localhost instead of a plain HTTP address.',
+    )
+  }
   const options: Parameters<typeof window.showDirectoryPicker>[0] = {
     mode: 'read',
   }

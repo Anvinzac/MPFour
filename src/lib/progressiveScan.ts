@@ -1,20 +1,19 @@
 import {
   BACKGROUND_SCAN_BATCH_SIZE,
-  QUICK_SCAN_FILES_PER_SUBDIR,
+  BACKGROUND_SCAN_FLUSH_MS,
+  QUICK_SCAN_MAX_DIRS,
   QUICK_SCAN_MAX_FILES,
-  QUICK_SCAN_MAX_SUBDIRS,
-  QUICK_SCAN_NESTED_SUBDIRS,
 } from './constants'
 import {
   classifyScanChannel,
   getMediaKind,
   type ScanChannel,
 } from './mediaExtensions'
-import { filterPlayableMedia } from './mediaValidator'
+import { rollDirectoryQuota } from './overviewSampler'
 import { shuffle } from './shuffle'
 import type { MediaFile } from '../types'
 import type { ScanResult } from './fileScanner'
-import { isFileWithinLimit } from './fileScanner'
+import { isFileLargeEnough, isFileWithinLimit } from './fileScanner'
 
 function createMediaId(file: File, relativePath: string): string {
   return `${relativePath}:${file.size}:${file.lastModified}`
@@ -31,6 +30,9 @@ async function mediaFileFromEntry(
   const file = await entry.getFile()
   if (!isFileWithinLimit(file.size)) {
     return { file: null, skippedOverLimit: 1 }
+  }
+  if (!isFileLargeEnough(file.size)) {
+    return { file: null, skippedOverLimit: 0 }
   }
 
   return {
@@ -51,42 +53,40 @@ interface SubdirEntry {
   path: string
 }
 
-interface LevelScanResult {
-  gallery: MediaFile[]
-  legacy: MediaFile[]
-  subdirs: SubdirEntry[]
-  skippedOverLimit: number
+interface ListedFile {
+  handle: FileSystemFileHandle
+  channel: ScanChannel
+  relativePath: string
 }
 
-async function scanDirectoryLevel(
+/** One directory's media entries (shuffled) and sub-directories, without reading any file. */
+async function listDirectory(
   dir: FileSystemDirectoryHandle,
-  folderId: string,
   basePath: string,
-): Promise<LevelScanResult> {
-  const gallery: MediaFile[] = []
-  const legacy: MediaFile[] = []
+): Promise<{ files: ListedFile[]; subdirs: SubdirEntry[] }> {
+  const files: ListedFile[] = []
   const subdirs: SubdirEntry[] = []
-  let skippedOverLimit = 0
 
   for await (const entry of dir.values()) {
+    const path = basePath ? `${basePath}/${entry.name}` : entry.name
     if (entry.kind === 'file') {
       const channel = classifyScanChannel(entry.name)
-      if (!channel) continue
-
-      const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name
-      const parsed = await mediaFileFromEntry(entry, folderId, relativePath)
-      skippedOverLimit += parsed.skippedOverLimit
-      if (!parsed.file) continue
-
-      if (channel === 'gallery') gallery.push(parsed.file)
-      else legacy.push(parsed.file)
+      if (channel) files.push({ handle: entry, channel, relativePath: path })
     } else if (entry.kind === 'directory') {
-      const path = basePath ? `${basePath}/${entry.name}` : entry.name
       subdirs.push({ handle: entry, path })
     }
   }
 
-  return { gallery, legacy, subdirs, skippedOverLimit }
+  return { files: shuffle(files), subdirs }
+}
+
+/** Removes and returns a random directory so traversal wanders the tree instead of going depth-first. */
+function takeRandom(frontier: SubdirEntry[]): SubdirEntry {
+  const index = Math.floor(Math.random() * frontier.length)
+  const picked = frontier[index]
+  frontier[index] = frontier[frontier.length - 1]
+  frontier.pop()
+  return picked
 }
 
 interface ChannelBuckets {
@@ -98,151 +98,68 @@ function emptyBuckets(): ChannelBuckets {
   return { gallery: [], legacy: [] }
 }
 
-function addToChannelBuckets(
-  buckets: ChannelBuckets,
-  channel: ScanChannel,
-  items: MediaFile[],
-  cap: number,
-  seen: Set<string>,
-): void {
-  const list = buckets[channel]
-  for (const item of items) {
-    if (seen.has(item.id)) continue
-    if (list.length >= cap) break
-    seen.add(item.id)
-    list.push(item)
-  }
-}
-
+/**
+ * Random walk over up to QUICK_SCAN_MAX_DIRS directories, taking a random
+ * 1–2 files from each, so the first screen is a survey of the whole tree.
+ */
 async function collectQuickSample(
   dir: FileSystemDirectoryHandle,
   folderId: string,
 ): Promise<{ buckets: ChannelBuckets; skippedOverLimit: number }> {
-  const root = await scanDirectoryLevel(dir, folderId, '')
-  let skippedOverLimit = root.skippedOverLimit
   const buckets = emptyBuckets()
-  const seen = new Set<string>()
+  let skippedOverLimit = 0
+  const frontier: SubdirEntry[] = [{ handle: dir, path: '' }]
+  let visited = 0
 
-  const addBoth = (level: LevelScanResult, galleryLimit: number) => {
-    addToChannelBuckets(buckets, 'gallery', level.gallery, galleryLimit, seen)
-    addToChannelBuckets(
-      buckets,
-      'legacy',
-      level.legacy,
-      QUICK_SCAN_MAX_FILES,
-      seen,
-    )
-  }
+  const full = () =>
+    buckets.gallery.length >= QUICK_SCAN_MAX_FILES &&
+    buckets.legacy.length >= QUICK_SCAN_MAX_FILES
 
-  const rootBudget = Math.max(
-    QUICK_SCAN_MAX_FILES - QUICK_SCAN_FILES_PER_SUBDIR * 2,
-    Math.floor(QUICK_SCAN_MAX_FILES / 2),
-  )
-  addBoth(
-    {
-      gallery: shuffle(root.gallery).slice(0, rootBudget),
-      legacy: shuffle(root.legacy).slice(0, rootBudget),
-      subdirs: root.subdirs,
-      skippedOverLimit: 0,
-    },
-    rootBudget,
-  )
+  while (frontier.length > 0 && visited < QUICK_SCAN_MAX_DIRS && !full()) {
+    const current = takeRandom(frontier)
+    visited++
+    const listing = await listDirectory(current.handle, current.path)
+    frontier.push(...listing.subdirs)
 
-  const subdirsToVisit = shuffle(root.subdirs).slice(0, QUICK_SCAN_MAX_SUBDIRS)
-
-  for (const subdir of subdirsToVisit) {
-    if (
-      buckets.gallery.length >= QUICK_SCAN_MAX_FILES &&
-      buckets.legacy.length >= QUICK_SCAN_MAX_FILES
-    ) {
-      break
-    }
-
-    const level = await scanDirectoryLevel(subdir.handle, folderId, subdir.path)
-    skippedOverLimit += level.skippedOverLimit
-    addBoth(
-      {
-        gallery: level.gallery.slice(0, QUICK_SCAN_FILES_PER_SUBDIR),
-        legacy: level.legacy.slice(0, QUICK_SCAN_FILES_PER_SUBDIR),
-        subdirs: level.subdirs,
-        skippedOverLimit: 0,
-      },
-      QUICK_SCAN_MAX_FILES,
-    )
-
-    for (const nested of shuffle(level.subdirs).slice(
-      0,
-      QUICK_SCAN_NESTED_SUBDIRS,
-    )) {
-      if (
-        buckets.gallery.length >= QUICK_SCAN_MAX_FILES &&
-        buckets.legacy.length >= QUICK_SCAN_MAX_FILES
-      ) {
-        break
-      }
-      const peek = await scanDirectoryLevel(nested.handle, folderId, nested.path)
-      skippedOverLimit += peek.skippedOverLimit
-      addBoth(
-        {
-          gallery: peek.gallery.slice(0, 2),
-          legacy: peek.legacy.slice(0, 2),
-          subdirs: [],
-          skippedOverLimit: 0,
-        },
-        QUICK_SCAN_MAX_FILES,
-      )
+    const quota = { gallery: rollDirectoryQuota(), legacy: rollDirectoryQuota() }
+    for (const listed of listing.files) {
+      const list = buckets[listed.channel]
+      if (quota[listed.channel] === 0 || list.length >= QUICK_SCAN_MAX_FILES) continue
+      const parsed = await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)
+      skippedOverLimit += parsed.skippedOverLimit
+      if (!parsed.file) continue
+      list.push(parsed.file)
+      quota[listed.channel]--
+      if (quota.gallery === 0 && quota.legacy === 0) break
     }
   }
 
   return { buckets, skippedOverLimit }
 }
 
-async function validateChannel(
-  channel: ScanChannel,
-  files: MediaFile[],
-): Promise<{ files: MediaFile[]; skippedUnplayable: number }> {
-  if (channel === 'legacy' || files.length === 0) {
-    return { files, skippedUnplayable: 0 }
-  }
-  const validated = await filterPlayableMedia(files)
-  return {
-    files: validated.files,
-    skippedUnplayable: validated.skippedUnplayable,
-  }
-}
-
+/** Full scan in random directory order (files shuffled within each directory). */
 async function walkDirectory(
   dir: FileSystemDirectoryHandle,
   folderId: string,
-  basePath: string,
   seenIds: Set<string>,
   onRawFile: (file: MediaFile, channel: ScanChannel) => Promise<void>,
   onSkippedOverLimit: (count: number) => void,
   isAborted: () => boolean,
 ): Promise<void> {
-  for await (const entry of dir.values()) {
+  const frontier: SubdirEntry[] = [{ handle: dir, path: '' }]
+
+  while (frontier.length > 0) {
     if (isAborted()) return
+    const current = takeRandom(frontier)
+    const listing = await listDirectory(current.handle, current.path)
+    frontier.push(...listing.subdirs)
 
-    if (entry.kind === 'file') {
-      const channel = classifyScanChannel(entry.name)
-      if (!channel) continue
-
-      const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name
-      const parsed = await mediaFileFromEntry(entry, folderId, relativePath)
+    for (const listed of listing.files) {
+      if (isAborted()) return
+      const parsed = await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)
       if (parsed.skippedOverLimit > 0) onSkippedOverLimit(parsed.skippedOverLimit)
       if (!parsed.file || seenIds.has(parsed.file.id)) continue
-      await onRawFile(parsed.file, channel)
-    } else if (entry.kind === 'directory') {
-      const nestedPath = basePath ? `${basePath}/${entry.name}` : entry.name
-      await walkDirectory(
-        entry,
-        folderId,
-        nestedPath,
-        seenIds,
-        onRawFile,
-        onSkippedOverLimit,
-        isAborted,
-      )
+      await onRawFile(parsed.file, listed.channel)
     }
   }
 }
@@ -272,19 +189,17 @@ export async function quickDualScanFolder(
   folderId: string,
 ): Promise<{ gallery: ScanResult; legacy: ScanResult }> {
   const raw = await collectQuickSample(dir, folderId)
-  const galleryValidated = await validateChannel('gallery', raw.buckets.gallery)
-  const legacyValidated = await validateChannel('legacy', raw.buckets.legacy)
 
   return {
     gallery: {
-      files: galleryValidated.files,
+      files: raw.buckets.gallery,
       skippedOverLimit: raw.skippedOverLimit,
-      skippedUnplayable: galleryValidated.skippedUnplayable,
+      skippedUnplayable: 0,
     },
     legacy: {
-      files: legacyValidated.files,
+      files: raw.buckets.legacy,
       skippedOverLimit: 0,
-      skippedUnplayable: legacyValidated.skippedUnplayable,
+      skippedUnplayable: 0,
     },
   }
 }
@@ -314,13 +229,7 @@ export async function backgroundDualScanFolder(
     pending[channel] = []
 
     const seen = channel === 'gallery' ? gallerySeen : legacySeen
-    const novel = raw.filter((file) => !seen.has(file.id))
-    if (novel.length === 0) return
-
-    const validated = await validateChannel(channel, novel)
-    totals[channel].skippedUnplayable += validated.skippedUnplayable
-
-    const fresh = validated.files.filter((file) => !seen.has(file.id))
+    const fresh = raw.filter((file) => !seen.has(file.id))
     for (const file of fresh) {
       seen.add(file.id)
       totals[channel].files.push(file)
@@ -330,7 +239,7 @@ export async function backgroundDualScanFolder(
       const batch: ScanResult = {
         files: fresh,
         skippedOverLimit: 0,
-        skippedUnplayable: validated.skippedUnplayable,
+        skippedUnplayable: 0,
       }
       if (channel === 'gallery') {
         await callbacks.onGalleryBackground(batch)
@@ -340,8 +249,10 @@ export async function backgroundDualScanFolder(
     }
   }
 
+  let lastFlushAt = Date.now()
   const flush = async () => {
     if (isAborted(signal)) throw new DOMException('Aborted', 'AbortError')
+    lastFlushAt = Date.now()
     totals.gallery.skippedOverLimit += pendingSkippedOverLimit
     totals.legacy.skippedOverLimit += pendingSkippedOverLimit
     pendingSkippedOverLimit = 0
@@ -354,14 +265,16 @@ export async function backgroundDualScanFolder(
   await walkDirectory(
     dir,
     folderId,
-    '',
     allSeen,
     async (file, channel) => {
       const seen = channel === 'gallery' ? gallerySeen : legacySeen
       if (seen.has(file.id)) return
       pending[channel].push(file)
       const pendingCount = pending.gallery.length + pending.legacy.length
-      if (pendingCount >= BACKGROUND_SCAN_BATCH_SIZE) {
+      if (
+        pendingCount >= BACKGROUND_SCAN_BATCH_SIZE ||
+        Date.now() - lastFlushAt >= BACKGROUND_SCAN_FLUSH_MS
+      ) {
         await flush()
       }
     },
@@ -375,7 +288,11 @@ export async function backgroundDualScanFolder(
   return totals
 }
 
-/** One filesystem walk: gallery (images + mp4/m4v/webm) and legacy (mkv/avi/wmv). */
+/**
+ * One filesystem walk: gallery (images + mp4/m4v/webm) and legacy (mkv/avi/wmv).
+ * Files are emitted unvalidated so discovery never waits on decoding; the
+ * gallery validates just the batch it is about to show.
+ */
 export async function progressiveDualScanFolder(
   dir: FileSystemDirectoryHandle,
   folderId: string,

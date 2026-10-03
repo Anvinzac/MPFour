@@ -24,11 +24,12 @@ export function useGalleryRenderer() {
 
   return useMemo(() => {
     function RenderGalleryCell(props: RenderComponentProps<GallerySlot>) {
+      const { reportSlotFailed } = useGalleryFallback()
+      if (!props.data) return null
       const { media, key: slotKey, useFixedHeight } = props.data
       const aspectRatio = useFixedHeight
         ? DEFAULT_ASPECT_RATIO
         : aspectRatioProbe.get(media.id)
-      const { reportSlotFailed } = useGalleryFallback()
       const height = props.width / aspectRatio
       // Keying by slotKey+mediaId remounts the boundary (clearing any prior
       // crash) whenever a failed slot is swapped for replacement media.

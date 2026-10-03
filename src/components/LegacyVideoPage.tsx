@@ -95,6 +95,7 @@ export function LegacyVideoPage({
               slots={legacyItems}
               onSlotFailed={reportSlotFailed}
               onNearEnd={onNearEnd}
+              footerStatus={isDiscovering ? 'Scanning more folders…' : null}
             />
           ) : isScanning || isDiscovering ? (
             <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">

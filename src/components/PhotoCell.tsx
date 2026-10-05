@@ -6,6 +6,7 @@ import { useGalleryFallback } from '../hooks/useGalleryFallback'
 import { mediaPreloader } from '../lib/mediaPreloader'
 import { PEEK_PLAYBACK_IO, PEEK_PREPARE_IO } from '../lib/mediaReady'
 import { CellPathLabel } from './CellPathLabel'
+import { CellComments } from './CellComments'
 import { FavoriteButton } from './FavoriteButton'
 import type { MediaFile, MediaKind } from '../types'
 
@@ -124,6 +125,7 @@ export const PhotoCell = memo(function PhotoCell({
       title={data.relativePath}
     >
       <FavoriteButton file={data} />
+      <CellComments file={data} />
 
       {isReady && (
         <button

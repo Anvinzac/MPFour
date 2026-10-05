@@ -7,6 +7,7 @@ import { LARGE_VIDEO_BYTES } from '../lib/constants'
 import { CanvasGridPlayer } from '../lib/mediabunnyPlayer'
 import { PEEK_PLAYBACK_IO } from '../lib/mediaReady'
 import { CellPathLabel } from './CellPathLabel'
+import { CellComments } from './CellComments'
 import { FavoriteButton } from './FavoriteButton'
 import type { MediaFile } from '../types'
 
@@ -177,6 +178,7 @@ export const MediaCell = memo(function MediaCell({
       title={data.relativePath}
     >
       <FavoriteButton file={data} />
+      <CellComments file={data} />
 
       {isReady && (
         <button

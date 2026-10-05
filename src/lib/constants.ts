@@ -20,11 +20,11 @@ export const QUICK_SCAN_MAX_FILES = 20
 /** Directories visited (in random order) during the quick pass before handing off to the full scan. */
 export const QUICK_SCAN_MAX_DIRS = 40
 /**
- * Overview rule for the mixed gallery: every directory contributes a random
- * 1–2 files so a large collection is surveyed broadly. Opening a directory
- * from a cell's path label shows all of its files.
+ * Phase 1 of the mixed gallery: every directory contributes 2 random
+ * representatives for a quick survey. Phase 2 then streams the rest,
+ * randomly mixed across directories, until every file has been shown.
  */
-export const OVERVIEW_MIN_PER_DIR = 1
+export const OVERVIEW_MIN_PER_DIR = 2
 export const OVERVIEW_MAX_PER_DIR = 2
 /** Raw files emitted per background batch while the user browses. */
 export const BACKGROUND_SCAN_BATCH_SIZE = 20

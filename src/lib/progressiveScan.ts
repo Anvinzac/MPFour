@@ -100,7 +100,7 @@ function emptyBuckets(): ChannelBuckets {
 
 /**
  * Random walk over up to QUICK_SCAN_MAX_DIRS directories, taking a random
- * 1–2 files from each, so the first screen is a survey of the whole tree.
+ * overview quota of files from each, so the first screen is a survey of the whole tree.
  */
 async function collectQuickSample(
   dir: FileSystemDirectoryHandle,

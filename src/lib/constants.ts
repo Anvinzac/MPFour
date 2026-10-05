@@ -40,6 +40,14 @@ export const PREVIEW_SLICE_ATTEMPTS = [
 export const PLAYBACK_HEALTH_CHECK_INTERVAL_MS = 3000
 /** Consecutive stalled health checks before declaring a player frozen. */
 export const PLAYBACK_STALL_THRESHOLD = 2
+/**
+ * A grid video out of view this long releases its decoder and pool slot
+ * (the last frame stays painted). Idle decoders otherwise starve visible
+ * cells and get reclaimed by the browser, leaving dead players behind.
+ */
+export const OFFSCREEN_RELEASE_MS = 1500
+/** Automatic remounts after a mid-playback failure before asking the user to reload. */
+export const MAX_AUTO_RECOVERIES = 2
 /** Max wait for a canvas pool slot before falling back to a <video> element (ms). */
 export const CANVAS_SLOT_TIMEOUT_MS = 8000
 /** Timeout for the <video> fallback to start playing (ms). */

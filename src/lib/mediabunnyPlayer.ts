@@ -11,6 +11,13 @@ import {
   PREVIEW_DURATION_SEC,
 } from './constants'
 
+const SLOT_TIMEOUT_MESSAGE = 'canvas slot timeout'
+
+/** True when mount failed only because every decoder slot was busy. */
+export function isSlotTimeout(err: unknown): boolean {
+  return err instanceof Error && err.message === SLOT_TIMEOUT_MESSAGE
+}
+
 let activeCanvasPlayers = 0
 const slotWaitQueue: Array<() => void> = []
 const countListeners = new Set<() => void>()
@@ -45,7 +52,7 @@ function reserveCanvasSlot(timeoutMs = CANVAS_SLOT_TIMEOUT_MS): Promise<void> {
     const timer = window.setTimeout(() => {
       const idx = slotWaitQueue.indexOf(resolver)
       if (idx >= 0) slotWaitQueue.splice(idx, 1)
-      reject(new Error('canvas slot timeout'))
+      reject(new Error(SLOT_TIMEOUT_MESSAGE))
     }, timeoutMs)
 
     resolver = () => {
@@ -103,7 +110,21 @@ export class CanvasGridPlayer {
   private displayCanvas: HTMLCanvasElement | null = null
   private ownsSlot = false
   private disposed = false
+  private failed = false
   private frameCount = 0
+  private failureHandler: (() => void) | null = null
+
+  /**
+   * Called once when decoding breaks mid-playback (e.g. the browser reclaimed
+   * the decoder). A failed player never recovers; the owner must remount.
+   */
+  onFailure(handler: (() => void) | null): void {
+    this.failureHandler = handler
+  }
+
+  isFailed(): boolean {
+    return this.failed
+  }
 
   async mount(
     file: File,
@@ -114,6 +135,7 @@ export class CanvasGridPlayer {
   ): Promise<void> {
     this.dispose()
     this.disposed = false
+    this.failed = false
 
     const usePoolSlot = options.usePoolSlot !== false
     if (usePoolSlot) {
@@ -184,7 +206,7 @@ export class CanvasGridPlayer {
   }
 
   play(): void {
-    if (!this.sink || !this.displayCanvas || this.playing) return
+    if (!this.sink || !this.displayCanvas || this.playing || this.failed) return
     this.playing = true
     this.startMs = performance.now()
     this.scheduleFrame()
@@ -209,6 +231,7 @@ export class CanvasGridPlayer {
 
   dispose(): void {
     this.disposed = true
+    this.failureHandler = null
     this.stop()
     if (this.ownsSlot) {
       this.ownsSlot = false
@@ -243,11 +266,14 @@ export class CanvasGridPlayer {
       }
     } catch {
       this.playing = false
+      if (this.disposed) return
+      this.failed = true
       try {
         await this.showFirstFrame()
       } catch {
         // keep last painted frame
       }
+      this.failureHandler?.()
     } finally {
       this.ticking = false
       if (this.playing) this.scheduleFrame()

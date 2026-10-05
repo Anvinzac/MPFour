@@ -1,3 +1,4 @@
+import { MIN_PHOTO_CACHE_SIZE } from './constants'
 import { calculatePreloadIndexRange } from './viewport'
 import { isFileWithinLimit } from './fileScanner'
 import type { MediaFile, MediaKind } from '../types'
@@ -85,6 +86,8 @@ class MediaPreloader {
       }
 
       await this.warmImageReady(id, entry.url)
+      // The warm-up Image pins a decoded bitmap; the visible <img> re-decodes on demand.
+      this.warmImages.delete(id)
 
       this.readyIds.add(id)
       return entry.url
@@ -100,7 +103,7 @@ class MediaPreloader {
       stopIndex,
       items.length,
     )
-    this.maxCacheSize = Math.max(maxCache, this.maxCacheSize)
+    this.maxCacheSize = Math.max(MIN_PHOTO_CACHE_SIZE, maxCache)
 
     for (let i = from; i <= to; i++) {
       const item = items[i]
@@ -108,6 +111,8 @@ class MediaPreloader {
         void this.prepare(item.id, item.handle, item.kind)
       }
     }
+    // After the loop, so items in the current window were just touched and survive.
+    this.trim()
   }
 
   getPreloadRange(
@@ -163,6 +168,12 @@ class MediaPreloader {
     const idx = this.lru.indexOf(id)
     if (idx >= 0) this.lru.splice(idx, 1)
     this.lru.push(id)
+  }
+
+  private trim(): void {
+    while (this.lru.length > this.maxCacheSize) {
+      this.evict(this.lru[0])
+    }
   }
 
   private evictIfNeeded(incomingId: string): void {

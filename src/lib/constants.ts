@@ -1,5 +1,5 @@
-/** Max concurrent Mediabunny canvas decoders in the grid (memory-safe). */
-export const MAX_ACTIVE_CANVAS_PLAYERS = 5
+/** Max concurrent Mediabunny canvas decoders in the grid; only on-screen cells hold one. */
+export const MAX_ACTIVE_CANVAS_PLAYERS = 9
 export const PREVIEW_DURATION_SEC = 5
 /** Files above this limit are excluded during scan to avoid memory crashes. */
 export const MAX_FILE_BYTES = 100 * 1024 * 1024
@@ -46,6 +46,14 @@ export const PLAYBACK_STALL_THRESHOLD = 2
  * cells and get reclaimed by the browser, leaving dead players behind.
  */
 export const OFFSCREEN_RELEASE_MS = 1500
+/**
+ * Off-screen this long, a cell also drops its pixels: video canvases are
+ * removed and photo <img>s unset, so the browser can free decoded bitmaps.
+ * They repaint from scratch when scrolled back into view.
+ */
+export const OFFSCREEN_PURGE_MS = 6000
+/** Floor for the photo blob-URL cache; it otherwise tracks the current viewport window. */
+export const MIN_PHOTO_CACHE_SIZE = 20
 /** Automatic remounts after a mid-playback failure before asking the user to reload. */
 export const MAX_AUTO_RECOVERIES = 2
 /** Max wait for a canvas pool slot before falling back to a <video> element (ms). */

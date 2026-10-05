@@ -3,6 +3,7 @@ import type { RenderComponentProps } from 'masonic'
 import { useCellHeight } from '../hooks/useCellHeight'
 import { useFullScreen } from '../hooks/useFullScreen'
 import { useGalleryFallback } from '../hooks/useGalleryFallback'
+import { OFFSCREEN_PURGE_MS } from '../lib/constants'
 import { mediaPreloader } from '../lib/mediaPreloader'
 import { PEEK_PLAYBACK_IO, PEEK_PREPARE_IO } from '../lib/mediaReady'
 import { CellPathLabel } from './CellPathLabel'
@@ -89,9 +90,23 @@ export const PhotoCell = memo(function PhotoCell({
       }
     }, PEEK_PREPARE_IO)
 
+    let purgeTimer = 0
+    const clearPurgeTimer = () => {
+      if (purgeTimer) window.clearTimeout(purgeTimer)
+      purgeTimer = 0
+    }
+
     const displayObserver = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) {
+        clearPurgeTimer()
         void showWhenReady()
+      } else if (!purgeTimer) {
+        purgeTimer = window.setTimeout(() => {
+          purgeTimer = 0
+          loadId++
+          setSrc(null)
+          setIsReady(false)
+        }, OFFSCREEN_PURGE_MS)
       }
     }, PEEK_PLAYBACK_IO)
 
@@ -100,6 +115,7 @@ export const PhotoCell = memo(function PhotoCell({
 
     return () => {
       cancelled = true
+      clearPurgeTimer()
       prepareObserver.disconnect()
       displayObserver.disconnect()
     }

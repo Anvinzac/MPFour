@@ -6,6 +6,7 @@ import { useGalleryFallback } from '../hooks/useGalleryFallback'
 import {
   LARGE_VIDEO_BYTES,
   MAX_AUTO_RECOVERIES,
+  OFFSCREEN_PURGE_MS,
   OFFSCREEN_RELEASE_MS,
   PLAYBACK_HEALTH_CHECK_INTERVAL_MS,
   PLAYBACK_STALL_THRESHOLD,
@@ -69,6 +70,7 @@ export const MediaCell = memo(function MediaCell({
     let visible = false
     let autoRecoveries = 0
     let releaseTimer = 0
+    let purgeTimer = 0
     let retryTimer = 0
     let healthTimer = 0
 
@@ -93,10 +95,22 @@ export const MediaCell = memo(function MediaCell({
       playerRef.current = null
     }
 
-    const clearTimers = () => {
+    const removeCanvas = () => {
+      canvasRef.current?.removeEventListener('contextrestored', onContextRestored)
+      canvasRef.current?.remove()
+      canvasRef.current = null
+    }
+
+    const clearOffscreenTimers = () => {
       if (releaseTimer) window.clearTimeout(releaseTimer)
-      if (retryTimer) window.clearTimeout(retryTimer)
+      if (purgeTimer) window.clearTimeout(purgeTimer)
       releaseTimer = 0
+      purgeTimer = 0
+    }
+
+    const clearTimers = () => {
+      clearOffscreenTimers()
+      if (retryTimer) window.clearTimeout(retryTimer)
       retryTimer = 0
       stopHealthCheck()
     }
@@ -226,18 +240,22 @@ export const MediaCell = memo(function MediaCell({
     const playObserver = new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting
       if (visible) {
-        if (releaseTimer) {
-          window.clearTimeout(releaseTimer)
-          releaseTimer = 0
-        }
+        clearOffscreenTimers()
         void startPlayback()
-      } else if (!releaseTimer) {
+      } else if (!releaseTimer && !purgeTimer) {
         playerRef.current?.stop()
         stopHealthCheck()
         releaseTimer = window.setTimeout(() => {
           releaseTimer = 0
           if (!visible) releasePlayer()
         }, OFFSCREEN_RELEASE_MS)
+        purgeTimer = window.setTimeout(() => {
+          purgeTimer = 0
+          if (visible) return
+          releasePlayer()
+          removeCanvas()
+          setIsReady(false)
+        }, OFFSCREEN_PURGE_MS)
       }
     }, PEEK_PLAYBACK_IO)
 
@@ -250,9 +268,7 @@ export const MediaCell = memo(function MediaCell({
       releasePlayer()
       setIsReady(false)
       setIsLargeFile(false)
-      canvasRef.current?.removeEventListener('contextrestored', onContextRestored)
-      canvasRef.current?.remove()
-      canvasRef.current = null
+      removeCanvas()
     }
   }, [data.id, data.handle, slotKey, reloadToken])
 

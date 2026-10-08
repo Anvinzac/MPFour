@@ -111,6 +111,11 @@ function mergeSkipTotals(
   }
 }
 
+/** A view switch replaces the whole list, so it starts from the top, not mid-way. */
+function scrollToTop(): void {
+  window.scrollTo({ top: 0, left: 0 })
+}
+
 function countShownPerDirectory(files: MediaFile[]): Map<string, number> {
   const counts = new Map<string, number>()
   for (const file of files) {
@@ -479,11 +484,13 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   const showMixedGallery = useCallback(() => {
     setGalleryView({ mode: 'mixed' })
     remixGallery(poolRef.current, { mode: 'mixed' })
+    scrollToTop()
   }, [remixGallery])
 
   const showFavoritesGallery = useCallback(() => {
     setGalleryView({ mode: 'favorites' })
     remixGallery(poolRef.current, { mode: 'favorites' })
+    scrollToTop()
   }, [remixGallery])
 
   const filterToSubfolder = useCallback(
@@ -502,6 +509,7 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
       const view: GalleryView = { mode: 'subfolder', filter }
       setGalleryView(view)
       remixGallery(poolRef.current, view)
+      scrollToTop()
     },
     [remixGallery],
   )

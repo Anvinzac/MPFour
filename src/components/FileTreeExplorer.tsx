@@ -37,6 +37,21 @@ interface BreadcrumbSegment {
   path: string
 }
 
+function joinPath(parent: string, name: string): string {
+  return parent ? `${parent}/${name}` : name
+}
+
+function displayNameFor(rootName: string, path: string): string {
+  return path ? `${rootName} / ${path.split('/').join(' / ')}` : rootName
+}
+
+/** Drops paths nested inside another selected path; the ancestor's scan already covers them. */
+function outermostPaths(paths: string[]): string[] {
+  return paths.filter(
+    (path) => !paths.some((other) => other !== path && path.startsWith(`${other}/`)),
+  )
+}
+
 function buildBreadcrumbs(rootName: string, currentPath: string): BreadcrumbSegment[] {
   const crumbs: BreadcrumbSegment[] = [{ name: rootName, path: '' }]
   if (!currentPath) return crumbs
@@ -67,6 +82,9 @@ export function FileTreeExplorer({
   const [loading, setLoading] = useState(false)
   const [picking, setPicking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Paths relative to the root; kept while navigating so folders from
+  // different branches can be ticked and added together.
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set())
   const [pendingPreset, setPendingPreset] = useState<PickerStartIn | undefined>(
     initialPreset,
   )
@@ -74,6 +92,19 @@ export function FileTreeExplorer({
   useEffect(() => {
     if (open) setPendingPreset(initialPreset)
   }, [open, initialPreset])
+
+  useEffect(() => {
+    if (!open) setSelectedPaths(new Set())
+  }, [open])
+
+  const toggleSelected = useCallback((path: string) => {
+    setSelectedPaths((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
 
   const pickRoot = useCallback(async (startIn?: PickerStartIn) => {
     setError(null)
@@ -88,6 +119,7 @@ export function FileTreeExplorer({
       setRootHandle(handle)
       setRootName(handle.name)
       setCurrentPath('')
+      setSelectedPaths(new Set())
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return
       setError(err instanceof Error ? err.message : 'Failed to open folder')
@@ -137,21 +169,44 @@ export function FileTreeExplorer({
     setCurrentPath(path)
   }, [])
 
-  const resolveCurrentHandle = useCallback(async (): Promise<{
-    handle: FileSystemDirectoryHandle
-    name: string
-  } | null> => {
-    if (!rootHandle) return null
-    const segments = currentPath.split('/').filter(Boolean)
-    let handle = rootHandle
-    for (const segment of segments) {
-      handle = await handle.getDirectoryHandle(segment, { create: false })
+  const resolvePath = useCallback(
+    async (
+      path: string,
+    ): Promise<{ handle: FileSystemDirectoryHandle; name: string } | null> => {
+      if (!rootHandle) return null
+      let handle = rootHandle
+      for (const segment of path.split('/').filter(Boolean)) {
+        handle = await handle.getDirectoryHandle(segment, { create: false })
+      }
+      return { handle, name: displayNameFor(rootName, path) }
+    },
+    [rootHandle, rootName],
+  )
+
+  const resolveCurrentHandle = useCallback(
+    () => resolvePath(currentPath),
+    [resolvePath, currentPath],
+  )
+
+  const addSelected = useCallback(async () => {
+    const paths = outermostPaths([...selectedPaths])
+    if (paths.length === 0) return
+    setPicking(true)
+    setError(null)
+    try {
+      const resolved = await Promise.all(paths.map((path) => resolvePath(path)))
+      // Scans run in parallel in the background; scan errors surface in the
+      // main view, so the dialog doesn't wait for whole trees to finish.
+      for (const entry of resolved) {
+        if (entry) void onPick(entry.handle, entry.name)
+      }
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add folders')
+    } finally {
+      setPicking(false)
     }
-    const name = currentPath
-      ? `${rootName} / ${currentPath.split('/').join(' / ')}`
-      : rootName
-    return { handle, name }
-  }, [rootHandle, rootName, currentPath])
+  }, [selectedPaths, resolvePath, onPick, onClose])
 
   const pickHere = useCallback(async () => {
     const resolved = await resolveCurrentHandle()
@@ -190,7 +245,7 @@ export function FileTreeExplorer({
             <h2 className="truncate text-sm font-semibold">Browse files</h2>
             <p className="truncate text-xs text-neutral-500">
               {rootHandle
-                ? 'Pick a folder to add to the gallery. Subfolders are included automatically.'
+                ? 'Add this folder, or tick several folders (across any branches) and add them together. Subfolders are included automatically.'
                 : 'Choose a starting location. The browser asks for permission once per root.'}
             </p>
           </div>
@@ -285,25 +340,65 @@ export function FileTreeExplorer({
                 </div>
               ) : (
                 <ul className="flex flex-col gap-1">
-                  {directories.map((dir) => (
-                    <li key={dir.name}>
+                  {directories.length > 1 && (
+                    <li className="flex justify-end px-3 pb-1">
                       <button
                         type="button"
-                        onClick={() => navigateInto(dir.name)}
-                        className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-neutral-900"
+                        onClick={() => {
+                          const paths = directories.map((dir) => joinPath(currentPath, dir.name))
+                          const allSelected = paths.every((path) => selectedPaths.has(path))
+                          setSelectedPaths((prev) => {
+                            const next = new Set(prev)
+                            for (const path of paths) {
+                              if (allSelected) next.delete(path)
+                              else next.add(path)
+                            }
+                            return next
+                          })
+                        }}
+                        className="text-xs text-sky-400 hover:text-sky-300"
                       >
-                        <span className="flex items-center gap-2">
-                          <span aria-hidden className="text-neutral-500">
-                            📁
-                          </span>
-                          <span className="truncate text-neutral-100">
-                            {dir.name}
-                          </span>
-                        </span>
-                        <span className="text-xs text-neutral-500">Open ›</span>
+                        {directories.every((dir) => selectedPaths.has(joinPath(currentPath, dir.name)))
+                          ? 'Unselect all here'
+                          : 'Select all here'}
                       </button>
                     </li>
-                  ))}
+                  )}
+                  {directories.map((dir) => {
+                    const path = joinPath(currentPath, dir.name)
+                    const checked = selectedPaths.has(path)
+                    return (
+                      <li
+                        key={dir.name}
+                        className={`flex items-center rounded-md ${checked ? 'bg-sky-950/40' : 'hover:bg-neutral-900'}`}
+                      >
+                        <label className="flex cursor-pointer items-center py-2 pl-3 pr-2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelected(path)}
+                            className="h-4 w-4 accent-sky-500"
+                            aria-label={`Select ${dir.name}`}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => navigateInto(dir.name)}
+                          className="flex min-w-0 flex-1 items-center justify-between py-2 pr-3 text-left text-sm"
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span aria-hidden className="text-neutral-500">
+                              📁
+                            </span>
+                            <span className="truncate text-neutral-100">
+                              {dir.name}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs text-neutral-500">Open ›</span>
+                        </button>
+                      </li>
+                    )
+                  })}
                   {mediaCount > 0 && (
                     <li className="mt-2 flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-900/50 px-3 py-2 text-xs text-neutral-400">
                       <span>
@@ -325,24 +420,48 @@ export function FileTreeExplorer({
                   setCurrentPath('')
                   setDirectories([])
                   setMediaCount(0)
+                  setSelectedPaths(new Set())
                   setError(null)
                 }}
                 className="text-xs text-neutral-400 hover:text-white"
               >
                 ← Choose a different root
               </button>
-              <button
-                type="button"
-                onClick={() => void pickHere()}
-                disabled={picking || loading || !rootHandle}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {picking
-                  ? 'Adding…'
-                  : currentPath
-                    ? `Add “${currentLeafName}” to gallery`
-                    : `Add “${rootName}” to gallery`}
-              </button>
+              {selectedPaths.size > 0 ? (
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPaths(new Set())}
+                    className="text-xs text-neutral-400 hover:text-white"
+                  >
+                    Clear selection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void addSelected()}
+                    disabled={picking}
+                    title={[...selectedPaths].map((path) => displayNameFor(rootName, path)).join('\n')}
+                    className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-neutral-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {picking
+                      ? 'Adding…'
+                      : `Add ${selectedPaths.size} selected folder${selectedPaths.size === 1 ? '' : 's'}`}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void pickHere()}
+                  disabled={picking || loading || !rootHandle}
+                  className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {picking
+                    ? 'Adding…'
+                    : currentPath
+                      ? `Add “${currentLeafName}” to gallery`
+                      : `Add “${rootName}” to gallery`}
+                </button>
+              )}
             </div>
           </>
         )}

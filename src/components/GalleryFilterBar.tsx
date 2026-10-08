@@ -5,6 +5,8 @@ interface GalleryFilterBarProps {
   onShowMixed: () => void
   onShowFavorites: () => void
   favoriteCount: number
+  imagesOnly: boolean
+  onToggleImagesOnly: () => void
 }
 
 export function GalleryFilterBar({
@@ -12,6 +14,8 @@ export function GalleryFilterBar({
   onShowMixed,
   onShowFavorites,
   favoriteCount,
+  imagesOnly,
+  onToggleImagesOnly,
 }: GalleryFilterBarProps) {
   const isMixed = galleryView.mode === 'mixed'
   const isFavorites = galleryView.mode === 'favorites'
@@ -41,6 +45,19 @@ export function GalleryFilterBar({
         }`}
       >
         Favorites{favoriteCount > 0 ? ` (${favoriteCount})` : ''}
+      </button>
+      <button
+        type="button"
+        onClick={onToggleImagesOnly}
+        aria-pressed={imagesOnly}
+        title="Skip all video files while scanning, so deep folder trees reach photos faster. Changing this rescans your folders."
+        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+          imagesOnly
+            ? 'bg-emerald-500 text-neutral-950'
+            : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+        }`}
+      >
+        Images only{imagesOnly ? ' ✓' : ''}
       </button>
 
       {isSubfolder && (

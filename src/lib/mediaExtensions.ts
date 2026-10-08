@@ -1,3 +1,4 @@
+import { isImagesOnly } from './scanPreferences'
 import type { MediaKind } from '../types'
 
 /** Web-native video containers for the main gallery. */
@@ -50,6 +51,7 @@ export function isGalleryMediaFile(name: string): boolean {
 }
 
 export function classifyScanChannel(name: string): ScanChannel | null {
+  if (isImagesOnly()) return isImageFile(name) ? 'gallery' : null
   if (isGalleryMediaFile(name)) return 'gallery'
   if (isLegacyVideoFile(name)) return 'legacy'
   return null

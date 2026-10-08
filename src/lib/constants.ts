@@ -26,6 +26,13 @@ export const QUICK_SCAN_MAX_DIRS = 40
  */
 export const OVERVIEW_MIN_PER_DIR = 2
 export const OVERVIEW_MAX_PER_DIR = 2
+/**
+ * Directories listed in parallel during a scan. Each listing is a round trip
+ * to the browser's file backend, so deep trees are latency-bound, not CPU-bound.
+ */
+export const SCAN_DIR_CONCURRENCY = 8
+/** Per-directory parallel getFile() calls (size checks) during a scan. */
+export const SCAN_FILE_CONCURRENCY = 6
 /** Raw files emitted per background batch while the user browses. */
 export const BACKGROUND_SCAN_BATCH_SIZE = 20
 /** Emit a partial background batch after this long, so slow folders still trickle in (ms). */

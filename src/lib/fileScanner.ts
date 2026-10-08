@@ -1,6 +1,6 @@
 import type { MediaFile } from '../types'
 import { MAX_FILE_BYTES, MIN_FILE_BYTES } from './constants'
-import { getMediaKind, isGalleryMediaFile } from './mediaExtensions'
+import { classifyScanChannel, getMediaKind } from './mediaExtensions'
 import { filterPlayableMedia } from './mediaValidator'
 
 export interface ScanResult {
@@ -54,7 +54,7 @@ export async function scanDirectory(
   let skippedOverLimit = 0
 
   for await (const entry of dir.values()) {
-    if (entry.kind === 'file' && isGalleryMediaFile(entry.name)) {
+    if (entry.kind === 'file' && classifyScanChannel(entry.name) === 'gallery') {
       const kind = getMediaKind(entry.name)
       if (!kind) continue
 
@@ -176,7 +176,7 @@ export async function listDirectory(
   for await (const entry of dir.values()) {
     if (entry.kind === 'directory') {
       directories.push({ name: entry.name, handle: entry })
-    } else if (entry.kind === 'file' && isGalleryMediaFile(entry.name)) {
+    } else if (entry.kind === 'file' && classifyScanChannel(entry.name) === 'gallery') {
       mediaCount++
     }
   }

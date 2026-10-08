@@ -1005,8 +1005,11 @@ export function useMediaPool(favoriteIds: Set<string> = new Set()) {
   ])
 
   useEffect(() => {
+    // Until restore finishes, activeFolders is still the empty initial state;
+    // persisting it would wipe the saved list before (a re-run of) restore reads it.
+    if (isRestoring) return
     persistActiveFolders(activeFolders)
-  }, [activeFolders, persistActiveFolders])
+  }, [activeFolders, isRestoring, persistActiveFolders])
 
   const addFolder = useCallback(async () => {
     setError(null)

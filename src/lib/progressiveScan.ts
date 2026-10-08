@@ -3,7 +3,10 @@ import {
   BACKGROUND_SCAN_FLUSH_MS,
   QUICK_SCAN_MAX_DIRS,
   QUICK_SCAN_MAX_FILES,
+  SCAN_DIR_CONCURRENCY,
+  SCAN_FILE_CONCURRENCY,
 } from './constants'
+import { isImagesOnly } from './scanPreferences'
 import {
   classifyScanChannel,
   getMediaKind,
@@ -72,12 +75,101 @@ async function listDirectory(
     if (entry.kind === 'file') {
       const channel = classifyScanChannel(entry.name)
       if (channel) files.push({ handle: entry, channel, relativePath: path })
-    } else if (entry.kind === 'directory') {
+    } else if (entry.kind === 'directory' && !isSkippedDirectory(entry.name)) {
       subdirs.push({ handle: entry, path })
     }
   }
 
   return { files: shuffle(files), subdirs }
+}
+
+/** System, cache and tooling folders that hold huge trees but no user media. */
+const SKIPPED_DIRECTORY_NAMES = new Set([
+  'node_modules',
+  'bower_components',
+  '__pycache__',
+  '__macosx',
+  '$recycle.bin',
+  'system volume information',
+  'appdata',
+  'programdata',
+  'program files',
+  'program files (x86)',
+  'windows',
+])
+const SKIPPED_BUNDLE_SUFFIXES = ['.app', '.framework', '.bundle', '.xcodeproj']
+
+function isSkippedDirectory(name: string): boolean {
+  if (name.startsWith('.')) return true
+  const lower = name.toLowerCase()
+  if (SKIPPED_DIRECTORY_NAMES.has(lower)) return true
+  return SKIPPED_BUNDLE_SUFFIXES.some((suffix) => lower.endsWith(suffix))
+}
+
+/** Runs `fn` over `items` with at most `limit` calls in flight, preserving order. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await fn(items[index])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
+/**
+ * Parallel random-order traversal: SCAN_DIR_CONCURRENCY workers share one
+ * frontier, and sub-directories are queued before a directory's files are
+ * processed, so idle workers dive deeper immediately. Unreadable
+ * directories are skipped instead of aborting the scan.
+ */
+async function crawl(
+  root: FileSystemDirectoryHandle,
+  onDirectory: (files: ListedFile[]) => Promise<void>,
+  shouldStop: (visited: number) => boolean,
+): Promise<void> {
+  const frontier: SubdirEntry[] = [{ handle: root, path: '' }]
+  const waiters: Array<() => void> = []
+  let active = 0
+  let visited = 0
+
+  const wakeAll = () => {
+    for (const wake of waiters.splice(0)) wake()
+  }
+
+  const worker = async () => {
+    for (;;) {
+      if (shouldStop(visited)) return
+      if (frontier.length === 0) {
+        if (active === 0) return
+        await new Promise<void>((resolve) => waiters.push(resolve))
+        continue
+      }
+      const current = takeRandom(frontier)
+      visited++
+      active++
+      try {
+        const listing = await listDirectory(current.handle, current.path)
+        frontier.push(...listing.subdirs)
+        wakeAll()
+        await onDirectory(listing.files)
+      } catch {
+        // permission denied / vanished directory
+      } finally {
+        active--
+        wakeAll()
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: SCAN_DIR_CONCURRENCY }, worker))
 }
 
 /** Removes and returns a random directory so traversal wanders the tree instead of going depth-first. */
@@ -94,6 +186,9 @@ interface ChannelBuckets {
   legacy: MediaFile[]
 }
 
+/** Quick pass may visit up to this many × QUICK_SCAN_MAX_DIRS while nothing is found. */
+const QUICK_SCAN_DEEP_FACTOR = 4
+
 function emptyBuckets(): ChannelBuckets {
   return { gallery: [], legacy: [] }
 }
@@ -108,31 +203,36 @@ async function collectQuickSample(
 ): Promise<{ buckets: ChannelBuckets; skippedOverLimit: number }> {
   const buckets = emptyBuckets()
   let skippedOverLimit = 0
-  const frontier: SubdirEntry[] = [{ handle: dir, path: '' }]
-  let visited = 0
+  const imagesOnly = isImagesOnly()
 
   const full = () =>
     buckets.gallery.length >= QUICK_SCAN_MAX_FILES &&
-    buckets.legacy.length >= QUICK_SCAN_MAX_FILES
+    (imagesOnly || buckets.legacy.length >= QUICK_SCAN_MAX_FILES)
 
-  while (frontier.length > 0 && visited < QUICK_SCAN_MAX_DIRS && !full()) {
-    const current = takeRandom(frontier)
-    visited++
-    const listing = await listDirectory(current.handle, current.path)
-    frontier.push(...listing.subdirs)
-
-    const quota = { gallery: rollDirectoryQuota(), legacy: rollDirectoryQuota() }
-    for (const listed of listing.files) {
-      const list = buckets[listed.channel]
-      if (quota[listed.channel] === 0 || list.length >= QUICK_SCAN_MAX_FILES) continue
-      const parsed = await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)
-      skippedOverLimit += parsed.skippedOverLimit
-      if (!parsed.file) continue
-      list.push(parsed.file)
-      quota[listed.channel]--
-      if (quota.gallery === 0 && quota.legacy === 0) break
-    }
-  }
+  await crawl(
+    dir,
+    async (files) => {
+      const quota = { gallery: rollDirectoryQuota(), legacy: rollDirectoryQuota() }
+      for (const listed of files) {
+        const list = buckets[listed.channel]
+        if (quota[listed.channel] === 0 || list.length >= QUICK_SCAN_MAX_FILES) continue
+        const parsed = await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)
+        skippedOverLimit += parsed.skippedOverLimit
+        if (!parsed.file) continue
+        list.push(parsed.file)
+        quota[listed.channel]--
+        if (quota.gallery === 0 && quota.legacy === 0) break
+      }
+    },
+    (visited) => {
+      if (full()) return true
+      if (visited < QUICK_SCAN_MAX_DIRS) return false
+      // Media buried deep under empty levels: keep digging a while longer
+      // so the first screen isn't empty, then hand off to the background scan.
+      const found = buckets.gallery.length + buckets.legacy.length
+      return found > 0 || visited >= QUICK_SCAN_MAX_DIRS * QUICK_SCAN_DEEP_FACTOR
+    },
+  )
 
   return { buckets, skippedOverLimit }
 }
@@ -146,22 +246,26 @@ async function walkDirectory(
   onSkippedOverLimit: (count: number) => void,
   isAborted: () => boolean,
 ): Promise<void> {
-  const frontier: SubdirEntry[] = [{ handle: dir, path: '' }]
-
-  while (frontier.length > 0) {
-    if (isAborted()) return
-    const current = takeRandom(frontier)
-    const listing = await listDirectory(current.handle, current.path)
-    frontier.push(...listing.subdirs)
-
-    for (const listed of listing.files) {
-      if (isAborted()) return
-      const parsed = await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)
-      if (parsed.skippedOverLimit > 0) onSkippedOverLimit(parsed.skippedOverLimit)
-      if (!parsed.file || seenIds.has(parsed.file.id)) continue
-      await onRawFile(parsed.file, listed.channel)
-    }
-  }
+  await crawl(
+    dir,
+    async (files) => {
+      const parsed = await mapLimit(files, SCAN_FILE_CONCURRENCY, async (listed) =>
+        isAborted()
+          ? null
+          : {
+              ...(await mediaFileFromEntry(listed.handle, folderId, listed.relativePath)),
+              channel: listed.channel,
+            },
+      )
+      for (const result of parsed) {
+        if (!result || isAborted()) return
+        if (result.skippedOverLimit > 0) onSkippedOverLimit(result.skippedOverLimit)
+        if (!result.file || seenIds.has(result.file.id)) continue
+        await onRawFile(result.file, result.channel)
+      }
+    },
+    () => isAborted(),
+  )
 }
 
 export interface DualScanCallbacks {
@@ -250,14 +354,21 @@ export async function backgroundDualScanFolder(
   }
 
   let lastFlushAt = Date.now()
-  const flush = async () => {
-    if (isAborted(signal)) throw new DOMException('Aborted', 'AbortError')
-    lastFlushAt = Date.now()
-    totals.gallery.skippedOverLimit += pendingSkippedOverLimit
-    totals.legacy.skippedOverLimit += pendingSkippedOverLimit
-    pendingSkippedOverLimit = 0
-    await flushChannel('gallery')
-    await flushChannel('legacy')
+  // Crawl workers call flush concurrently; chain them so batches reach the
+  // callbacks one at a time and in order.
+  let flushChain: Promise<void> = Promise.resolve()
+  const flush = () => {
+    const run = flushChain.then(async () => {
+      if (isAborted(signal)) throw new DOMException('Aborted', 'AbortError')
+      lastFlushAt = Date.now()
+      totals.gallery.skippedOverLimit += pendingSkippedOverLimit
+      totals.legacy.skippedOverLimit += pendingSkippedOverLimit
+      pendingSkippedOverLimit = 0
+      await flushChannel('gallery')
+      await flushChannel('legacy')
+    })
+    flushChain = run.catch(() => {})
+    return run
   }
 
   const allSeen = new Set([...gallerySeen, ...legacySeen])

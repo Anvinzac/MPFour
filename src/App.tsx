@@ -15,6 +15,7 @@ import { FavoritesProvider, useFavorites } from './hooks/useFavorites'
 import { GalleryActionsProvider } from './hooks/useGalleryActions'
 import { useMediaPool } from './hooks/useMediaPool'
 import { isDirectoryPickerSupported } from './lib/fileScanner'
+import { isImagesOnly, setImagesOnly } from './lib/scanPreferences'
 import type { AppView, PickerStartIn } from './types'
 
 const directoryPickerSupported = isDirectoryPickerSupported()
@@ -218,6 +219,11 @@ function AppContent() {
           onShowMixed={showMixedGallery}
           onShowFavorites={showFavoritesGallery}
           favoriteCount={favoriteIds.size}
+          imagesOnly={isImagesOnly()}
+          onToggleImagesOnly={() => {
+            setImagesOnly(!isImagesOnly())
+            window.location.reload()
+          }}
         />
 
         {notice && (

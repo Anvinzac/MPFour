@@ -14,6 +14,12 @@ interface MasonryGridProps {
   onNearEnd?: () => void
   /** Shown under the grid, e.g. while the scan is still finding folders. */
   footerStatus?: string | null
+  /**
+   * Re-checks the bottom sentinel whenever this changes. Defaults to the slot
+   * count; pass the unfiltered count when `slots` is a filtered view, so a
+   * load that added nothing visible still asks for the next batch.
+   */
+  loadProgress?: number
 }
 
 /**
@@ -84,11 +90,12 @@ export function MasonryGrid({
   onSlotFailed,
   onNearEnd,
   footerStatus,
+  loadProgress,
 }: MasonryGridProps) {
   const render = useGalleryRenderer()
   const nearEndTimerRef = useRef(0)
   const layoutGeneration = useLayoutGeneration(slots)
-  const sentinelRef = useBottomSentinel(slots.length, onNearEnd)
+  const sentinelRef = useBottomSentinel(loadProgress ?? slots.length, onNearEnd)
 
   const handleRender = useCallback(
     (startIndex: number, stopIndex: number) => {

@@ -61,7 +61,7 @@ function probeAspectRatios(files: MediaFile[]): Promise<void> {
   )
 }
 
-function resolveVisiblePool(
+export function resolveVisiblePool(
   pool: MediaFile[],
   view: GalleryView,
   favoriteIds: Set<string>,

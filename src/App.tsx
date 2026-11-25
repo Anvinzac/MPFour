@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Header } from './components/Header'
 import { FolderChips } from './components/FolderChips'
@@ -9,12 +9,14 @@ import { MasonryGrid } from './components/MasonryGrid'
 import { GalleryFilterBar } from './components/GalleryFilterBar'
 import { FileTreeExplorer } from './components/FileTreeExplorer'
 import { MemoryChip } from './components/MemoryChip'
+import { PaneResizeHandle } from './components/PaneResizeHandle'
 import { VideoPlaylistPane } from './components/VideoPlaylistPane'
 import { useCanvasPlayerCount } from './hooks/useCanvasPlayerCount'
 import { FullScreenProvider } from './hooks/useFullScreen'
 import { FavoritesProvider, useFavorites } from './hooks/useFavorites'
 import { GalleryActionsProvider } from './hooks/useGalleryActions'
 import { resolveVisiblePool, useMediaPool } from './hooks/useMediaPool'
+import { usePaneWidth } from './hooks/usePaneWidth'
 import { isDirectoryPickerSupported } from './lib/fileScanner'
 import { isImagesOnly, setImagesOnly } from './lib/scanPreferences'
 import type { AppView, GalleryView, PickerStartIn } from './types'
@@ -91,6 +93,7 @@ function AppContent() {
   // Dual pane: videos play one after another in the docked left player, and
   // the gallery on the right shows only the photos of the same view.
   const showVideoPane = !isImagesOnly()
+  const [paneWidth, setPaneWidth] = usePaneWidth()
   const photoSlots = useMemo(
     () =>
       showVideoPane
@@ -212,17 +215,21 @@ function AppContent() {
 
   return (
     <GalleryActionsProvider value={galleryActions}>
-      <div className="min-h-screen bg-neutral-950 text-white">
+      <div
+        className="min-h-screen bg-neutral-950 text-white"
+        style={{ '--pane-w': showVideoPane ? `${paneWidth}vw` : '0px' } as CSSProperties}
+      >
         {showVideoPane && (
-          <aside className="fixed inset-y-0 left-0 z-40 w-[30vw] overflow-hidden border-r border-neutral-800">
+          <aside className="fixed inset-y-0 left-0 z-40 w-(--pane-w)">
             <VideoPlaylistPane
               videos={paneVideos}
               resetKey={galleryViewKey(galleryView)}
               isDiscovering={isDiscovering || busy}
             />
+            <PaneResizeHandle width={paneWidth} onResize={setPaneWidth} />
           </aside>
         )}
-        <div className={showVideoPane ? 'ml-[30vw]' : undefined}>
+        <div className="ml-(--pane-w)">
           <div className="sticky top-0 z-50">
             <Header
               onAddFolder={addFolder}
@@ -263,11 +270,7 @@ function AppContent() {
           />
 
           {notice && (
-            <div
-              className={`pointer-events-none fixed right-0 top-28 z-[45] px-4 ${
-                showVideoPane ? 'left-[30vw]' : 'left-0'
-              }`}
-            >
+            <div className="pointer-events-none fixed left-(--pane-w) right-0 top-28 z-[45] px-4">
               <div className="pointer-events-auto mx-auto flex max-w-7xl items-center justify-between rounded-lg border border-amber-900/50 bg-amber-950/95 px-4 py-2 text-sm text-amber-200 shadow-lg backdrop-blur-sm">
                 <span>{notice}</span>
                 <button

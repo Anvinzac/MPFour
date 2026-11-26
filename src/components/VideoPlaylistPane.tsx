@@ -22,15 +22,15 @@ interface Playlist {
 interface DeckSlot {
   id: string | null
   url: string | null
+  /** Paused on its first frame (or playing) with that frame decoded. */
   ready: boolean
 }
 
 type SlotIndex = 0 | 1
 type Pair<T> = [T, T]
 
-/** Crossfade length, and how long before a clip's end the next one starts fading in. */
+/** Length of the fade between a clip's frozen last frame and the next clip's first frame. */
 const FADE_MS = 200
-const FADE_SEC = FADE_MS / 1000
 
 const EMPTY_SLOT: DeckSlot = { id: null, url: null, ready: false }
 
@@ -86,10 +86,14 @@ function stepPlayable(
 }
 
 /**
- * Two stacked <video> decks take turns. The hidden deck preloads the next
- * clip; FADE_MS before the visible clip ends, the hidden deck starts playing
- * and fades in on top. The covered deck then hides and preloads the clip
- * after that.
+ * Two stacked, fully opaque <video> decks take turns. The deck underneath
+ * preloads the next clip and sits paused on its first frame. When the clip on
+ * top ends (or the viewer skips), it freezes on its current frame and fades
+ * out, revealing that first frame; once the fade is done the new clip starts
+ * playing and the old deck, now underneath, preloads the clip after it.
+ *
+ * Only the top deck's opacity changes, over a deck that is already painted,
+ * so the picture never dips through black mid-fade.
  */
 export function VideoPlaylistPane({
   videos,
@@ -108,14 +112,12 @@ export function VideoPlaylistPane({
   const [failedIds, setFailedIds] = useState<Set<string>>(() => new Set())
   const [slots, setSlots] = useState<Pair<DeckSlot>>([EMPTY_SLOT, EMPTY_SLOT])
   const [active, setActive] = useState<SlotIndex>(0)
-  const [shown, setShown] = useState<Pair<boolean>>([false, false])
-  const activeRef = useRef(active)
-  activeRef.current = active
+  const [fading, setFading] = useState(false)
+  const fadingRef = useRef(false)
+  fadingRef.current = fading
   const fadeTimerRef = useRef(0)
   const loadTokensRef = useRef<Pair<number>>([0, 0])
   const urlsRef = useRef<Pair<string | null>>([null, null])
-  // Clip id the near-end check already advanced from, so it fires once per clip.
-  const advancedFromRef = useRef<string | null>(null)
 
   const { items, index } = playlist
   const total = items.length
@@ -125,7 +127,8 @@ export function VideoPlaylistPane({
   const standby = otherSlot(active)
   const activeHoldsTarget = target !== null && slots[active].id === target.id
   const nextIndex = target ? stepPlayable(items, index, 1, failedIds) : null
-  // The hidden deck preloads whatever comes next: the target itself while
+  const hasNext = nextIndex !== null
+  // The deck underneath preloads whatever comes next: the target itself while
   // switching to it, otherwise the clip after it.
   const standbyTarget = !target
     ? null
@@ -206,120 +209,68 @@ export function VideoPlaylistPane({
   useEffect(() => {
     if (target) return
     window.clearTimeout(fadeTimerRef.current)
+    setFading(false)
     loadSlot(0, null)
     loadSlot(1, null)
-    setShown([false, false])
   }, [target, loadSlot])
 
-  // Preload the hidden deck once it has finished fading out.
+  // Preload the deck underneath. It is fully covered, so swapping its clip is invisible.
   const standbyTargetId = standbyTarget?.id ?? null
   const standbyTargetRef = useRef(standbyTarget)
   standbyTargetRef.current = standbyTarget
   useEffect(() => {
-    if (!standbyTargetId || shown[standby]) return
+    if (!standbyTargetId || fading) return
     if (slots[standby].id === standbyTargetId) return
     loadSlot(standby, standbyTargetRef.current)
-  }, [standby, standbyTargetId, shown, slots, loadSlot])
+  }, [standby, standbyTargetId, fading, slots, loadSlot])
 
-  // Switch decks once the hidden one holds the target and can play it.
+  /** Ends a fade: the revealed deck goes on top and starts playing. */
+  const finishFade = useCallback(() => {
+    if (!fadingRef.current) return
+    window.clearTimeout(fadeTimerRef.current)
+    fadingRef.current = false
+    setFading(false)
+    setActive((prev) => otherSlot(prev))
+  }, [])
+
+  // Once the deck underneath shows the target's first frame, freeze the clip
+  // on top and fade it out.
   useEffect(() => {
-    if (!target || activeHoldsTarget) return
+    if (!target || activeHoldsTarget || fading) return
     const slot = slots[standby]
     if (slot.id !== target.id || !slot.ready) return
+    const below = decks[standby].current
+    if (below && below.currentTime > 0) {
+      // A deck reused for "previous" still sits where it stopped; rewind
+      // first, and onSeeked marks it ready again.
+      setSlots((prev) => withSlot(prev, standby, { ...prev[standby], ready: false }))
+      below.currentTime = 0
+      return
+    }
+    decks[active].current?.pause()
+    setFading(true)
+    // transitionend normally ends the fade; this covers a tab that isn't painting.
     window.clearTimeout(fadeTimerRef.current)
-    setActive(standby)
-  }, [target, activeHoldsTarget, slots, standby])
-
-  /** Hides and pauses the deck beneath `slot`, freeing it to preload. */
-  const hideCovered = useCallback(
-    (slot: SlotIndex) => {
-      if (activeRef.current !== slot) return
-      window.clearTimeout(fadeTimerRef.current)
-      const covered = otherSlot(slot)
-      decks[covered].current?.pause()
-      setShown((prev) => (prev[covered] ? withSlot(prev, covered, false) : prev))
-    },
+    fadeTimerRef.current = window.setTimeout(finishFade, FADE_MS + 150)
     // decks are refs and never change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  )
+  }, [target, activeHoldsTarget, fading, slots, standby, active, finishFade])
 
-  /**
-   * Fades `slot` in on top. The deck beneath hides when the fade's
-   * transitionend fires; the timer covers fades that never run (the deck was
-   * already visible, or the tab isn't painting).
-   */
-  const reveal = useCallback(
-    (slot: SlotIndex) => {
-      if (activeRef.current !== slot) return
-      setShown((prev) => (prev[slot] ? prev : withSlot(prev, slot, true)))
-      window.clearTimeout(fadeTimerRef.current)
-      fadeTimerRef.current = window.setTimeout(() => hideCovered(slot), FADE_MS * 4)
-    },
-    [hideCovered],
-  )
-
-  // Start the active deck from the top whenever it takes over.
+  // Play the deck that just came on top, from the first frame it was showing.
   const activeReady = slots[active].ready
   const activeUrl = slots[active].url
   useEffect(() => {
     const video = decks[active].current
     if (!video || !activeReady) return
-    advancedFromRef.current = null
-    video.currentTime = 0
-    video
-      .play()
-      .catch(() => {
-        // Sound autoplay is blocked until the viewer interacts; retry muted.
-        if (video.muted) throw new Error('play blocked')
-        for (const deck of decks) if (deck.current) deck.current.muted = true
-        return video.play()
-      })
-      .then(
-        () => reveal(active),
-        () => {},
-      )
+    video.play().catch(() => {
+      // Sound autoplay is blocked until the viewer interacts; retry muted.
+      if (video.muted) return
+      for (const deck of decks) if (deck.current) deck.current.muted = true
+      void video.play().catch(() => {})
+    })
     // decks are refs and never change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeReady, activeUrl, reveal])
-
-  // Start the next clip FADE_MS before the current one ends. A timer aimed at
-  // that moment, re-aimed on every seek, pause or rate change, stays accurate
-  // where per-frame polling would drift with the page's frame rate.
-  const activeId = slots[active].id
-  const hasNext = nextIndex !== null
-  useEffect(() => {
-    const video = decks[active].current
-    if (!hasNext || !video || !activeId) return
-    let timer = 0
-    const remaining = () => (video.duration - video.currentTime) / (video.playbackRate || 1)
-    const fire = () => {
-      timer = 0
-      if (video.paused || advancedFromRef.current === activeId) return
-      if (remaining() > FADE_SEC + 0.05) {
-        schedule()
-        return
-      }
-      advancedFromRef.current = activeId
-      goTo(1)
-    }
-    const schedule = () => {
-      window.clearTimeout(timer)
-      timer = 0
-      const left = remaining()
-      if (video.paused || !Number.isFinite(left)) return
-      timer = window.setTimeout(fire, Math.max(0, (left - FADE_SEC) * 1000))
-    }
-    const events = ['playing', 'pause', 'seeked', 'ratechange', 'durationchange']
-    for (const name of events) video.addEventListener(name, schedule)
-    schedule()
-    return () => {
-      window.clearTimeout(timer)
-      for (const name of events) video.removeEventListener(name, schedule)
-    }
-    // decks are refs and never change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeId, hasNext, goTo])
+  }, [active, activeReady, activeUrl])
 
   useEffect(() => {
     const urls = urlsRef.current
@@ -339,6 +290,15 @@ export function VideoPlaylistPane({
     }
   }
 
+  const markReady = (slot: SlotIndex) => {
+    setSlots((prev) =>
+      prev[slot].ready || !prev[slot].url
+        ? prev
+        : withSlot(prev, slot, { ...prev[slot], ready: true }),
+    )
+  }
+
+  const activeId = slots[active].id
   const current = activeId ? (items.find((file) => file.id === activeId) ?? null) : null
   const currentIndex = current ? items.indexOf(current) : -1
   const playableCount = total - failedCount
@@ -356,42 +316,34 @@ export function VideoPlaylistPane({
       <div className="relative min-h-0 flex-1">
         {([0, 1] as const).map((slot) => {
           const isActive = slot === active
-          const isShown = shown[slot] && !message
+          const isFadingOut = isActive && fading
           return (
             <video
               key={slot}
               ref={decks[slot]}
               src={slots[slot].url ?? undefined}
-              // Opaque black so the letterbox bars cover the clip beneath during a fade.
+              // Opaque black so each deck fully covers the one beneath, letterbox bars included.
               className="absolute inset-0 h-full w-full bg-black object-contain"
               style={{
-                opacity: isShown ? 1 : 0,
-                // Fades in; hides instantly once covered.
-                transition: isShown ? `opacity ${FADE_MS}ms linear` : 'none',
+                opacity: isFadingOut || message ? 0 : 1,
+                // Only the fade-out animates; everything else snaps while covered.
+                transition: isFadingOut ? `opacity ${FADE_MS}ms linear` : 'none',
                 zIndex: isActive ? 2 : 1,
                 pointerEvents: isActive ? 'auto' : 'none',
               }}
-              controls={isActive && isShown}
+              controls={isActive && !fading && !!slots[slot].url}
               muted
               preload="auto"
               playsInline
               loop={isActive && !hasNext}
-              onCanPlay={() => {
-                setSlots((prev) =>
-                  prev[slot].ready || !prev[slot].url
-                    ? prev
-                    : withSlot(prev, slot, { ...prev[slot], ready: true }),
-                )
-              }}
+              onLoadedData={() => markReady(slot)}
+              onSeeked={() => markReady(slot)}
               onTransitionEnd={(event) => {
-                if (event.propertyName === 'opacity' && isActive && isShown) hideCovered(slot)
+                if (event.propertyName === 'opacity' && isFadingOut) finishFade()
               }}
+              // The clip stops on its last frame; the fade starts once the next one is ready.
               onEnded={() => {
-                // Fallback for when the near-end check didn't run (background tab).
-                if (isActive && advancedFromRef.current !== slots[slot].id) {
-                  advancedFromRef.current = slots[slot].id
-                  goTo(1)
-                }
+                if (isActive) goTo(1)
               }}
               onVolumeChange={(event) => {
                 if (isActive) syncAudio(event.currentTarget)
